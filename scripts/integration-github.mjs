@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { launch, eventually } from "./harness.mjs";
 import { approveBrowser } from "../tests/helpers.js";
