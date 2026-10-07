@@ -34,7 +34,13 @@ export default {
     ];
     await context.command.transform((commands) => {
       for (const [name, description, execute] of definitions) commands.add({ name, description, async execute({ sessionID }) {
-        try { await execute(sessionID); }
+        try {
+          if (name !== "login" && !runtime.authenticated()) {
+            await runtime.bridge.message(sessionID, `/${name}`, "Сначала выполните /login, чтобы войти в корпоративный OpenCode.");
+            return;
+          }
+          await execute(sessionID);
+        }
         catch (error) { await runtime.bridge.message(sessionID, `/${name}`, error.message); }
       } });
     });

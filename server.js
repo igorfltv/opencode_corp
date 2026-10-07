@@ -2025,6 +2025,10 @@ ${status.config.lastError}` : ""}`);
       for (const [name, description, execute] of definitions)
         commands.add({ name, description, async execute({ sessionID }) {
           try {
+            if (name !== "login" && !runtime.authenticated()) {
+              await runtime.bridge.message(sessionID, `/${name}`, "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login, \u0447\u0442\u043E\u0431\u044B \u0432\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode.");
+              return;
+            }
             await execute(sessionID);
           } catch (error) {
             await runtime.bridge.message(sessionID, `/${name}`, error.message);

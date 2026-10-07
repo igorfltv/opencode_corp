@@ -18,9 +18,17 @@ try {
   const findForm = (title) => eventually(async () => (await demo.forms()).find((form) => form.title.includes(title)));
   const dismiss = async () => { for (const form of await demo.forms()) await demo.request(`/api/session/${demo.session.id}/form/${form.id}`, { method: "DELETE" }); };
   const admin = (body) => fetch(`${demo.emulator.baseURL}/admin/state`, { method: "POST", headers: { "Content-Type": "application/json", "x-demo-admin": demo.emulator.adminToken }, body: JSON.stringify(body) });
-  await demo.command("refresh_config");
-  assert((await findForm("/refresh_config")).fields[0].description.includes("/login"));
-  await dismiss();
+  const beforeLoginConfig = await readFile(demo.configPath, "utf8");
+  const beforeLoginAudit = demo.emulator.state.audit.length;
+  for (const name of ["refresh_config", "skills_load", "inference_status", "corp_status", "logout"]) {
+    await demo.command(name);
+    const form = await findForm(`/${name}`);
+    assert(form.fields[0].description.includes("Сначала выполните /login"), `${name} did not require login`);
+    await dismiss();
+  }
+  assert.equal(await readFile(demo.configPath, "utf8"), beforeLoginConfig);
+  assert.equal(demo.emulator.state.audit.length, beforeLoginAudit);
+  console.log("PASS all non-login commands require /login and leave config/server untouched");
   async function login() {
     await demo.command("login");
     const form = await findForm("Вход в корпоративный");
@@ -73,6 +81,8 @@ try {
   assert(!parseConfig(await readFile(demo.configPath, "utf8")).providers?.corporate);
   assert.equal(await readFile(join(demo.profile, "corporate-state/access-token"), "utf8"), "");
   assert(!JSON.stringify(demo.emulator.state.audit).includes(credential.accessToken));
+  await dismiss(); await demo.command("corp_status");
+  assert((await findForm("/corp_status")).fields[0].description.includes("Сначала выполните /login"));
   console.log("PASS expiry, re-login, revocation, logout and secret-free audit");
   console.log("Integration checks complete on the installed OpenCode binary.");
 } catch (error) {
