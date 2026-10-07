@@ -1496,8 +1496,14 @@ async function applyConfig({ configPath, stateDir, envelope, serverURL, previous
 async function removeProvider(configPath) {
   let text = await readFile2(configPath, "utf8");
   const current = parseConfig(text);
-  if (current.providers?.corporate)
-    text = applyEdits(text, modify(text, ["providers", "corporate"], undefined, {}));
+  if (!object(current.providers))
+    return;
+  const count = Object.keys(current.providers).length;
+  if (!Object.hasOwn(current.providers, "corporate") && count > 0)
+    return;
+  const path = count <= 1 ? ["providers"] : ["providers", "corporate"];
+  text = applyEdits(text, modify(text, path, undefined, {}));
+  parseConfig(text);
   await atomicWrite(configPath, text);
 }
 
@@ -1706,9 +1712,18 @@ class CorporateRuntime {
   }
   async start() {
     this.credential = await readJSON(join3(this.options.stateDir, "credential.json"));
-    if (!validCredential(this.credential))
+    if (!validCredential(this.credential) || this.credential.expiresAt <= Date.now())
       this.credential = null;
     this.state = await readJSON(join3(this.options.stateDir, "sync.json"), {});
+    if (!this.credential) {
+      await rm(join3(this.options.stateDir, "credential.json"), { force: true });
+      await rm(join3(this.options.stateDir, "sync.json"), { force: true });
+      const tokenPath = join3(this.options.stateDir, "access-token");
+      if (await exists(tokenPath))
+        await atomicWrite(tokenPath, "");
+      await removeProvider(this.options.configPath);
+      this.state = {};
+    }
     this.configTimer = setInterval(() => this.backgroundRefresh(), this.options.refreshMs);
     this.loadTimer = setInterval(() => this.pollLoad().catch(() => {}), this.options.loadPollMs);
     this.configTimer.unref();

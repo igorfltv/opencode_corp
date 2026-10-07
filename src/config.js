@@ -51,6 +51,11 @@ export async function applyConfig({ configPath, stateDir, envelope, serverURL, p
 export async function removeProvider(configPath) {
   let text = await readFile(configPath, "utf8");
   const current = parseConfig(text);
-  if (current.providers?.corporate) text = applyEdits(text, modify(text, ["providers", "corporate"], undefined, {}));
+  if (!object(current.providers)) return;
+  const count = Object.keys(current.providers).length;
+  if (!Object.hasOwn(current.providers, "corporate") && count > 0) return;
+  const path = count <= 1 ? ["providers"] : ["providers", "corporate"];
+  text = applyEdits(text, modify(text, path, undefined, {}));
+  parseConfig(text);
   await atomicWrite(configPath, text);
 }

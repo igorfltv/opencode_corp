@@ -19,6 +19,8 @@ try {
   const dismiss = async () => { for (const form of await demo.forms()) await demo.request(`/api/session/${demo.session.id}/form/${form.id}`, { method: "DELETE" }); };
   const admin = (body) => fetch(`${demo.emulator.baseURL}/admin/state`, { method: "POST", headers: { "Content-Type": "application/json", "x-demo-admin": demo.emulator.adminToken }, body: JSON.stringify(body) });
   const beforeLoginConfig = await readFile(demo.configPath, "utf8");
+  assert.deepEqual(Object.keys(parseConfig(beforeLoginConfig)).sort(), ["model", "plugins", "share"].sort());
+  assert(!parseConfig(beforeLoginConfig).providers);
   const beforeLoginAudit = demo.emulator.state.audit.length;
   for (const name of ["refresh_config", "skills_load", "inference_status", "corp_status", "logout"]) {
     await demo.command(name);
@@ -78,7 +80,7 @@ try {
   assert((await findForm("/skills_load")).fields[0].description.includes("/login"));
   await dismiss(); await login(); await dismiss(); await demo.command("logout");
   await findForm("Выход выполнен");
-  assert(!parseConfig(await readFile(demo.configPath, "utf8")).providers?.corporate);
+  assert(!parseConfig(await readFile(demo.configPath, "utf8")).providers);
   assert.equal(await readFile(join(demo.profile, "corporate-state/access-token"), "utf8"), "");
   assert(!JSON.stringify(demo.emulator.state.audit).includes(credential.accessToken));
   await dismiss(); await demo.command("corp_status");

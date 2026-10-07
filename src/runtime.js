@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { rm } from "node:fs/promises";
-import { atomicWrite, readJSON, serial, trustedURL } from "./io.js";
+import { atomicWrite, exists, readJSON, serial, trustedURL } from "./io.js";
 import { CorporateAPI, Unauthorized } from "./api.js";
 import { applyConfig, removeProvider, validateConfig } from "./config.js";
 import { validateCatalog, installSkills } from "./skills.js";
@@ -29,8 +29,16 @@ export class CorporateRuntime {
   }
   async start() {
     this.credential = await readJSON(join(this.options.stateDir, "credential.json"));
-    if (!validCredential(this.credential)) this.credential = null;
+    if (!validCredential(this.credential) || this.credential.expiresAt <= Date.now()) this.credential = null;
     this.state = await readJSON(join(this.options.stateDir, "sync.json"), {});
+    if (!this.credential) {
+      await rm(join(this.options.stateDir, "credential.json"), { force: true });
+      await rm(join(this.options.stateDir, "sync.json"), { force: true });
+      const tokenPath = join(this.options.stateDir, "access-token");
+      if (await exists(tokenPath)) await atomicWrite(tokenPath, "");
+      await removeProvider(this.options.configPath);
+      this.state = {};
+    }
     this.configTimer = setInterval(() => this.backgroundRefresh(), this.options.refreshMs);
     this.loadTimer = setInterval(() => this.pollLoad().catch(() => {}), this.options.loadPollMs);
     this.configTimer.unref(); this.loadTimer.unref();

@@ -6,10 +6,10 @@ import { createHash } from "node:crypto";
 import { createEmulator } from "../server/emulator.js";
 import { CorporateAPI, Unauthorized } from "../src/api.js";
 import { startLogin } from "../src/login.js";
-import { applyConfig, parseConfig, validateConfig } from "../src/config.js";
+import { applyConfig, parseConfig, removeProvider, validateConfig } from "../src/config.js";
 import { installSkills, validateCatalog } from "../src/skills.js";
 import { optionsFromEnv, CorporateRuntime } from "../src/runtime.js";
-import { atomicWrite, digest, random } from "../src/io.js";
+import { atomicWrite, digest, exists, random } from "../src/io.js";
 import { approveBrowser } from "./helpers.js";
 
 const cleanups = [];
@@ -85,6 +85,38 @@ test("patches only its provider, preserves JSONC comments and stores no token in
   const before = (await stat(configPath)).mtimeMs;
   expect((await applyConfig({ configPath, stateDir, serverURL, envelope: envelope(serverURL), previous: first })).changed).toBe(false);
   expect((await stat(configPath)).mtimeMs).toBe(before);
+});
+
+test("removes the whole corporate provider block when it is the only provider", async () => {
+  const root = await folder(), configPath = join(root, "opencode.jsonc");
+  await atomicWrite(configPath, '{\n  // Keep the plugin\n  "plugins": ["github:igorfltv/opencode_corp#main"],\n  "providers": { "corporate": { "name": "Demo" } }\n}\n');
+  await removeProvider(configPath);
+  const text = await readFile(configPath, "utf8");
+  expect(text).toContain("// Keep the plugin");
+  expect(parseConfig(text)).toEqual({ plugins: ["github:igorfltv/opencode_corp#main"] });
+  await atomicWrite(configPath, '{"providers":{"personal":{"name":"Personal"},"corporate":{"name":"Demo"}}}');
+  await removeProvider(configPath);
+  expect(parseConfig(await readFile(configPath, "utf8")).providers).toEqual({ personal: { name: "Personal" } });
+  await atomicWrite(configPath, '{"plugins":["github:igorfltv/opencode_corp#main"],"providers":{}}');
+  await removeProvider(configPath);
+  expect(parseConfig(await readFile(configPath, "utf8"))).toEqual({ plugins: ["github:igorfltv/opencode_corp#main"] });
+});
+
+test("startup without a valid login clears stale provider and credentials", async () => {
+  const root = await folder(), configPath = join(root, "opencode.jsonc"), stateDir = join(root, "corporate-state");
+  await atomicWrite(configPath, '{"plugins":["github:igorfltv/opencode_corp#main"],"providers":{"corporate":{"name":"Demo"}}}');
+  await atomicWrite(join(stateDir, "credential.json"), JSON.stringify({ accessToken: random(), expiresAt: Date.now() - 1000, user: { name: "Expired" } }));
+  await atomicWrite(join(stateDir, "access-token"), "stale-token");
+  await atomicWrite(join(stateDir, "sync.json"), JSON.stringify({ revision: 1 }));
+  const runtime = new CorporateRuntime(optionsFromEnv({}, { profileDir: root, serverURL: "http://127.0.0.1:4310" }), { notify: async () => {} });
+  try {
+    await runtime.start();
+    expect(runtime.status().authenticated).toBe(false);
+    expect(parseConfig(await readFile(configPath, "utf8"))).toEqual({ plugins: ["github:igorfltv/opencode_corp#main"] });
+    expect(await readFile(join(stateDir, "access-token"), "utf8")).toBe("");
+    expect(await exists(join(stateDir, "credential.json"))).toBeNull();
+    expect(await exists(join(stateDir, "sync.json"))).toBeNull();
+  } finally { runtime.dispose(); }
 });
 
 test("rejects executable settings, unapproved hosts, malformed JSONC and config rollback", async () => {
