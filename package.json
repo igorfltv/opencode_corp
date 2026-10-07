@@ -1,0 +1,19 @@
+{
+  "name": "@company/opencode-corporate-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": ["server.js", "tui.js", "README.md", "ROADMAP.md"],
+  "exports": { ".": "./server.js", "./server": "./server.js", "./tui": "./tui.js" },
+  "scripts": {
+    "build": "bun build src/plugin.js --target=bun --outfile server.js && bun build src/tui.js --target=bun --outfile tui.js",
+    "test": "bun test tests",
+    "test:integration": "bun run scripts/integration.mjs",
+    "demo": "bun run scripts/demo.mjs",
+    "demo:open": "bun run scripts/open.mjs",
+    "pack": "bun run build && bun run scripts/package.mjs",
+    "install:local": "bun run build && bun run scripts/install-local.mjs",
+    "server": "bun run server/main.js"
+  },
+  "dependencies": { "jsonc-parser": "3.3.1" }
+}

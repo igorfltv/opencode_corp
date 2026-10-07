@@ -1,0 +1,46 @@
+import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
+
+const rpc = {
+  id: "company.corporate",
+  methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
+  events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } },
+};
+const registryKey = Symbol.for("company.opencode.corporate.runtime.v1");
+export default {
+  id: "company-corporate",
+  async setup(context) {
+    const options = optionsFromEnv(process.env, context.options);
+    const registry = globalThis[registryKey] ??= new Map();
+    const key = `${options.configPath}|${options.serverURL}`;
+    let entry = registry.get(key);
+    if (!entry) {
+      const runtime = new CorporateRuntime(options);
+      entry = { runtime, ready: runtime.start(), refs: 0 };
+      registry.set(key, entry);
+    }
+    entry.refs++;
+    await entry.ready;
+    const runtime = entry.runtime;
+    const registration = await context.rpc.register(rpc, { status: async () => runtime.status() });
+    const listener = (event) => registration.events.emit("notice", event);
+    runtime.listeners.add(listener);
+    const definitions = [
+      ["login", "Войти в корпоративный OpenCode через браузер", (id) => runtime.login(id)],
+      ["refresh_config", "Получить и применить корпоративный конфиг", async (id) => { const state = await runtime.refresh(); await runtime.bridge.message(id, "Конфиг актуален", `Версия ${state.revision}. Проверено: ${state.checkedAt}`); }],
+      ["skills_load", "Выбрать и загрузить корпоративные skills", (id) => runtime.skills(id, () => context.skill.reload())],
+      ["logout", "Выйти из корпоративной учётной записи", async (id) => { await runtime.logout(); await runtime.bridge.message(id, "Выход выполнен", "Токен удалён, корпоративный провайдер отключён. Скачанные skills сохранены."); }],
+      ["corp_status", "Учётная запись, версия конфига и состояние инференса", async (id) => { const status = runtime.status(); await runtime.bridge.message(id, "Корпоративный статус", `${status.authenticated ? status.user.name : "Не выполнен вход — /login"}\nКонфиг: ${status.config.revision ?? "не загружен"}\nПоследняя проверка: ${status.config.checkedAt ?? "ещё не было"}\n${lights[status.load.level]} ${status.load.message}\nАвтообновление: ${status.refreshMinutes} мин.${status.config.lastError ? `\n${status.config.lastError}` : ""}`); }],
+      ["inference_status", "Светофор нагрузки на инференс", async (id) => { runtime.token(); await runtime.pollLoad(); await runtime.bridge.message(id, `${lights[runtime.load.level]} Инференс`, runtime.load.message); }],
+    ];
+    await context.command.transform((commands) => {
+      for (const [name, description, execute] of definitions) commands.add({ name, description, async execute({ sessionID }) {
+        try { await execute(sessionID); }
+        catch (error) { await runtime.bridge.message(sessionID, `/${name}`, error.message); }
+      } });
+    });
+    return () => {
+      runtime.listeners.delete(listener);
+      if (--entry.refs === 0) { runtime.dispose(); registry.delete(key); }
+    };
+  },
+};

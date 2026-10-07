@@ -1,0 +1,85 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { launch, eventually } from "./harness.mjs";
+import { approveBrowser } from "../tests/helpers.js";
+import { parseConfig } from "../src/config.js";
+
+const directory = await mkdtemp(join(tmpdir(), "corporate-integration-"));
+let demo;
+try {
+  demo = await launch({ directory, refreshMs: 750, loadPollMs: 300, quiet: true });
+  const commandNames = (await demo.request("/api/command")).data.map((command) => command.name);
+  for (const name of ["login", "refresh_config", "skills_load", "logout", "corp_status", "inference_status"]) assert(commandNames.includes(name));
+  const plugin = (await demo.request("/api/plugin")).data.find((plugin) => plugin.id === "company-corporate");
+  assert.equal(plugin.state.status, "active");
+  console.log("PASS native plugin and six slash commands registered");
+  const findForm = (title) => eventually(async () => (await demo.forms()).find((form) => form.title.includes(title)));
+  const dismiss = async () => { for (const form of await demo.forms()) await demo.request(`/api/session/${demo.session.id}/form/${form.id}`, { method: "DELETE" }); };
+  const admin = (body) => fetch(`${demo.emulator.baseURL}/admin/state`, { method: "POST", headers: { "Content-Type": "application/json", "x-demo-admin": demo.emulator.adminToken }, body: JSON.stringify(body) });
+  await demo.command("refresh_config");
+  assert((await findForm("/refresh_config")).fields[0].description.includes("/login"));
+  await dismiss();
+  async function login() {
+    await demo.command("login");
+    const form = await findForm("Вход в корпоративный");
+    assert.equal(form.metadata.kind, "question");
+    assert(form.fields.some((field) => field.type === "string"));
+    const callback = await approveBrowser(form.fields[0].url);
+    assert.equal((await fetch(callback)).status, 200);
+    await findForm("Вход выполнен");
+  }
+  await login();
+  const credentialPath = join(demo.profile, "corporate-state/credential.json");
+  const credential = JSON.parse(await readFile(credentialPath, "utf8"));
+  const configuration = await readFile(demo.configPath, "utf8");
+  assert(configuration.includes("// Изолированный"));
+  assert(!configuration.includes(credential.accessToken));
+  assert.equal((await stat(credentialPath)).mode & 0o777, 0o600);
+  assert.equal(parseConfig(configuration).providers.corporate.settings.baseURL, `${demo.emulator.baseURL}/v1`);
+  await eventually(async () => (await demo.request("/api/config")).some((entry) => entry.info?.providers?.corporate?.models?.["demo-code"]));
+  console.log("PASS browser PKCE login, private token, JSONC patch and live OpenCode config reload");
+  await dismiss();
+  await admin({ publish: true, modelName: "Company Code V2", context: 64000 });
+  await demo.command("refresh_config"); await findForm("Конфиг актуален");
+  assert.equal(parseConfig(await readFile(demo.configPath, "utf8")).providers.corporate.models["demo-code"].name, "Company Code V2");
+  await admin({ publish: true, modelName: "Automatic V3", context: 96000 });
+  await eventually(async () => parseConfig(await readFile(demo.configPath, "utf8")).providers.corporate.models["demo-code"].name === "Automatic V3");
+  console.log("PASS manual refresh and autonomous timed refresh (750 ms test interval; hourly default)");
+  await dismiss(); await demo.command("skills_load");
+  const form = await findForm("Загрузить корпоративные");
+  assert.equal(form.fields[0].type, "multiselect");
+  assert.equal(form.metadata.kind, "question");
+  assert.equal(form.fields[0].options.length, 3);
+  await demo.request(`/api/session/${demo.session.id}/form/${form.id}/reply`, { method: "POST", body: { answer: { skills: ["corp-code-review", "corp-data-quality"] } } });
+  await findForm("Skills загружены");
+  assert((await readFile(join(demo.profile, "skills/corp-code-review/SKILL.md"), "utf8")).includes("name: corp-code-review"));
+  await eventually(async () => (await demo.request("/api/skill")).data?.some((skill) => skill.name === "corp-code-review"));
+  console.log("PASS native multiselect form, authenticated skill installation and live discovery");
+  await dismiss(); await admin({ level: "red" }); await demo.command("inference_status");
+  await findForm("🔴");
+  const configBefore = await readFile(demo.configPath, "utf8");
+  await dismiss(); await admin({ offline: true }); await demo.command("inference_status");
+  await findForm("⚪");
+  assert.equal(await readFile(demo.configPath, "utf8"), configBefore);
+  console.log("PASS red load state and grey outage state; last config preserved");
+  await admin({ offline: false, expire: true });
+  await eventually(async () => await readFile(join(demo.profile, "corporate-state/access-token"), "utf8") === "");
+  await dismiss(); await demo.command("skills_load");
+  assert((await findForm("/skills_load")).fields[0].description.includes("/login"));
+  await dismiss(); await login(); await dismiss(); await demo.command("logout");
+  await findForm("Выход выполнен");
+  assert(!parseConfig(await readFile(demo.configPath, "utf8")).providers?.corporate);
+  assert.equal(await readFile(join(demo.profile, "corporate-state/access-token"), "utf8"), "");
+  assert(!JSON.stringify(demo.emulator.state.audit).includes(credential.accessToken));
+  console.log("PASS expiry, re-login, revocation, logout and secret-free audit");
+  console.log("Integration checks complete on the installed OpenCode binary.");
+} catch (error) {
+  console.error(error.message);
+  console.error(`Diagnostic profile retained at ${directory}`);
+  process.exitCode = 1;
+} finally {
+  await demo?.stop();
+  if (!process.exitCode) await rm(directory, { recursive: true, force: true });
+}

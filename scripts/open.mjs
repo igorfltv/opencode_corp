@@ -1,0 +1,12 @@
+import { readJSON } from "../src/io.js";
+import { openBrowser } from "../src/desktop.js";
+import { root } from "./harness.mjs";
+import { join } from "node:path";
+const connection = await readJSON(join(root, ".demo/config/opencode/opencode-connection.json"));
+if (!connection) throw new Error("Сначала выполните bun run demo");
+const response = await fetch(`${connection.url}/api/pair`, { method: "POST", headers: { Authorization: `Basic ${Buffer.from(`opencode:${connection.password}`).toString("base64")}` }, signal: AbortSignal.timeout(5000) });
+if (!response.ok) throw new Error("Не удалось подключиться; запустите bun run demo");
+const { code } = await response.json();
+const url = `${connection.url}/auth/connect/${code}`;
+if (process.argv.includes("--print")) console.log(url);
+else await openBrowser(url);

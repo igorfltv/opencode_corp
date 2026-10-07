@@ -1,0 +1,204 @@
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { rm } from "node:fs/promises";
+import { atomicWrite, readJSON, serial, trustedURL } from "./io.js";
+import { CorporateAPI, Unauthorized } from "./api.js";
+import { applyConfig, removeProvider, validateConfig } from "./config.js";
+import { validateCatalog, installSkills } from "./skills.js";
+import { startLogin } from "./login.js";
+import { openBrowser, notifyDesktop } from "./desktop.js";
+import { OpenCodeBridge } from "./bridge.js";
+
+export const lights = { green: "🟢", yellow: "🟡", red: "🔴", unknown: "⚪" };
+const validCredential = (value) => value && typeof value.accessToken === "string" && /^[A-Za-z0-9_-]{32,256}$/.test(value.accessToken) && Number.isFinite(value.expiresAt) && typeof value.user?.name === "string";
+export class CorporateRuntime {
+  constructor(options, adapters = {}) {
+    this.options = options;
+    this.api = adapters.api ?? new CorporateAPI(options.serverURL);
+    this.bridge = adapters.bridge ?? new OpenCodeBridge(options.connectionFile);
+    this.open = adapters.open ?? openBrowser;
+    this.desktop = adapters.notify ?? notifyDesktop;
+    this.queue = serial();
+    this.listeners = new Set();
+    this.jobs = new Set();
+    this.forms = new Map();
+    this.abort = new AbortController();
+    this.state = {};
+    this.authGeneration = 0;
+    this.load = { level: "unknown", message: "Нет свежих данных", checkedAt: null };
+  }
+  async start() {
+    this.credential = await readJSON(join(this.options.stateDir, "credential.json"));
+    if (!validCredential(this.credential)) this.credential = null;
+    this.state = await readJSON(join(this.options.stateDir, "sync.json"), {});
+    this.configTimer = setInterval(() => this.backgroundRefresh(), this.options.refreshMs);
+    this.loadTimer = setInterval(() => this.pollLoad().catch(() => {}), this.options.loadPollMs);
+    this.configTimer.unref(); this.loadTimer.unref();
+    if (this.authenticated()) { this.backgroundRefresh(); this.pollLoad().catch(() => {}); }
+  }
+  authenticated() { return Boolean(this.credential && this.credential.expiresAt > Date.now()); }
+  token() { if (!this.authenticated()) throw new Unauthorized(); return this.credential.accessToken; }
+  status() {
+    return { authenticated: this.authenticated(), user: this.authenticated() ? this.credential.user : null,
+      expiresAt: this.authenticated() ? this.credential.expiresAt : null,
+      config: { revision: this.state.revision ?? null, checkedAt: this.state.checkedAt ?? null, lastError: this.state.lastError ?? null },
+      load: { ...this.load }, refreshMinutes: this.options.refreshMs / 60000 };
+  }
+  async notice(message, level = "info") {
+    if (this.abort.signal.aborted) return;
+    const event = { message, level, at: Date.now() };
+    await Promise.allSettled([this.desktop(message), ...[...this.listeners].map((listener) => Promise.resolve().then(() => listener(event)))]);
+  }
+  async persistState() { await atomicWrite(join(this.options.stateDir, "sync.json"), JSON.stringify(this.state, null, 2)); }
+  async refresh() {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.queue(async () => {
+      const token = this.token();
+      try {
+        const response = await this.api.request("/api/config", { token, etag: this.state.etag, signal: this.abort.signal });
+        if (response.unchanged) this.state = { ...this.state, checkedAt: new Date().toISOString(), lastError: null };
+        else {
+          const applied = await applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null });
+          this.state = { ...applied, etag: response.etag, lastError: null };
+          if (applied.changed) await this.notice(`Корпоративный конфиг обновлён: версия ${applied.revision}`, "success");
+        }
+        await this.persistState();
+        return this.state;
+      } catch (error) {
+        if (error instanceof Unauthorized) await this.invalidate();
+        this.state.lastError = error instanceof Unauthorized ? error.message : "Не удалось обновить конфиг; сохранена предыдущая версия";
+        await this.persistState();
+        throw error;
+      }
+    }).finally(() => { this.refreshing = null; });
+    return this.refreshing;
+  }
+  async backgroundRefresh() {
+    if (!this.credential) return;
+    try { await this.refresh(); this.syncFailed = false; }
+    catch { if (!this.syncFailed) { this.syncFailed = true; await this.notice(this.state.lastError ?? "Нужен повторный /login", "warning"); } }
+  }
+  async invalidate() {
+    this.credential = null;
+    await Promise.all([rm(join(this.options.stateDir, "credential.json"), { force: true }), atomicWrite(join(this.options.stateDir, "access-token"), "")]);
+  }
+  async pollLoad() {
+    if (this.polling || !this.credential) return;
+    this.polling = true;
+    const polledToken = this.credential?.accessToken;
+    let next;
+    try {
+      const { data } = await this.api.request("/api/load", { token: this.token(), signal: this.abort.signal });
+      if (!["green", "yellow", "red"].includes(data?.level) || typeof data.message !== "string" || data.message.length > 250 || !Number.isFinite(data.observedAt) || Math.abs(Date.now() - data.observedAt) > 90000) throw new Error("Нет свежих данных нагрузки");
+      next = { level: data.level, message: data.message, queue: data.queue, checkedAt: data.observedAt };
+    } catch (error) {
+      next = { level: "unknown", message: error instanceof Unauthorized ? "Требуется /login" : "Сервер нагрузки недоступен", checkedAt: Date.now() };
+      if (error instanceof Unauthorized) await this.queue(() => this.credential?.accessToken === polledToken ? this.invalidate() : undefined);
+    } finally { this.polling = false; }
+    if (this.abort.signal.aborted) return;
+    if (this.credential && this.credential.accessToken !== polledToken) return;
+    if (!this.credential && next.level !== "unknown") return;
+    const changed = next.level !== this.load.level;
+    this.load = next;
+    if (changed) await this.notice(`${lights[next.level]} Инференс: ${next.message}`, { green: "success", yellow: "warning", red: "error", unknown: "warning" }[next.level]);
+  }
+  track(promise, sessionID) {
+    this.jobs.add(promise);
+    promise.catch(async (error) => {
+      if (!this.abort.signal.aborted) {
+        await this.bridge.message(sessionID, "Корпоративный плагин", error.message).catch(() => {});
+        await this.notice(error.message, "error");
+      }
+    }).finally(() => this.jobs.delete(promise));
+  }
+  async login(sessionID) {
+    if (this.loginFlow || this.loginPending) throw new Error("Вход уже открыт в браузере");
+    this.loginPending = true;
+    const generation = this.authGeneration;
+    let flow;
+    try { flow = await startLogin(this.api); } finally { this.loginPending = false; }
+    if (generation !== this.authGeneration || this.abort.signal.aborted) { flow.cancel(); return; }
+    this.loginFlow = flow;
+    const form = await this.bridge.form(sessionID, "Вход в корпоративный OpenCode", [
+      { type: "external", key: "login", title: "Открыть страницу входа", url: flow.url },
+      { type: "string", key: "waiting", title: "Вход в корпоративный OpenCode", description: `В открывшемся браузере выберите тестовую учётную запись. Пароль не нужен. Если браузер не открылся, скопируйте адрес: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "Ожидаю входа в браузере" }] },
+    ]).catch((error) => { flow.cancel(); this.loginFlow = null; throw error; });
+    this.open(flow.url).catch(() => this.notice("Откройте ссылку входа в форме OpenCode", "info"));
+    const cancellation = new AbortController();
+    this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => { if (answer === null) flow.cancel(); }).catch(() => {});
+    this.track((async () => {
+      try {
+        const result = await flow.result;
+        if (!validCredential(result) || result.expiresAt <= Date.now()) throw new Error("Сервер вернул некорректную авторизацию");
+        validateConfig(result.configuration, this.options.serverURL);
+        await this.queue(async () => {
+          if (generation !== this.authGeneration || this.abort.signal.aborted) throw new Error("Вход отменён");
+          this.credential = { accessToken: result.accessToken, expiresAt: result.expiresAt, user: result.user };
+          await atomicWrite(join(this.options.stateDir, "credential.json"), JSON.stringify(this.credential));
+          await atomicWrite(join(this.options.stateDir, "access-token"), this.credential.accessToken);
+          this.state = { ...(await applyConfig({ ...this.options, envelope: result.configuration })), lastError: null };
+          await this.persistState();
+        });
+        await this.bridge.message(sessionID, "Вход выполнен", `${result.user.name}. Конфиг версии ${this.state.revision} применён. Доступны /refresh_config и /skills_load.`);
+        await this.notice("Вход выполнен; корпоративный конфиг применён", "success");
+        await this.pollLoad();
+      } finally {
+        cancellation.abort();
+        await this.bridge.cancel(sessionID, form.id);
+        this.loginFlow = null;
+      }
+    })(), sessionID);
+  }
+  async skills(sessionID, reload) {
+    if (this.forms.has(sessionID)) throw new Error("Форма выбора skills уже открыта");
+    const token = this.token();
+    const { data } = await this.api.request("/api/skills", { token, signal: this.abort.signal });
+    const catalog = validateCatalog(data);
+    if (!catalog.length) return this.bridge.message(sessionID, "Корпоративные skills", "Для вашей учётной записи нет доступных skills.");
+    const form = await this.bridge.form(sessionID, "Загрузить корпоративные skills", [{
+      type: "multiselect", key: "skills", title: "Выберите нужные skills", description: "Загрузятся только отмеченные skills. Уже установленные останутся на месте.",
+      custom: false, minItems: 0, default: [], options: catalog.map((skill) => ({ value: skill.id, label: `${skill.name} · ${skill.version}`, description: skill.description })),
+    }]);
+    const controller = new AbortController();
+    this.forms.set(sessionID, { form, controller });
+    this.track((async () => {
+      try {
+        const signal = AbortSignal.any([this.abort.signal, controller.signal, AbortSignal.timeout(300000)]);
+        const answer = await this.bridge.wait(sessionID, form.id, signal);
+        if (answer === null) return;
+        const installed = await this.queue(async () => {
+          if (this.token() !== token) throw new Error("Учётная запись изменилась; откройте /skills_load снова");
+          return installSkills({ ids: answer.skills ?? [], catalog, api: this.api, token, skillsDir: this.options.skillsDir, signal });
+        });
+        await reload();
+        await this.bridge.message(sessionID, "Skills загружены", installed.length ? installed.join("\n") : "Ничего не выбрано.");
+      } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
+    })(), sessionID);
+  }
+  async logout() {
+    this.authGeneration++;
+    this.loginFlow?.cancel();
+    for (const { controller } of this.forms.values()) controller.abort();
+    await this.queue(async () => {
+      const token = this.credential?.accessToken;
+      await this.invalidate();
+      this.state = {}; await this.persistState();
+      this.load = { level: "unknown", message: "Вход не выполнен", checkedAt: null };
+      try { await removeProvider(this.options.configPath); }
+      finally { if (token) await this.api.request("/oauth/revoke", { token, method: "POST", body: {} }).catch(() => {}); }
+    });
+  }
+  dispose() {
+    clearInterval(this.configTimer); clearInterval(this.loadTimer);
+    this.abort.abort(); this.loginFlow?.cancel();
+  }
+}
+
+export function optionsFromEnv(env = process.env, settings = {}) {
+  const profile = resolve(env.CORP_PROFILE_DIR ?? settings.profileDir ?? env.OPENCODE_CONFIG_DIR ?? join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode"));
+  const serviceFile = join(env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "opencode", "service.json");
+  const interval = (value, fallback) => { const n = Number(value ?? fallback); if (!Number.isFinite(n) || n < 50) throw new Error("Некорректный интервал опроса"); return n; };
+  return { serverURL: trustedURL(env.CORP_SERVER_URL ?? settings.serverURL ?? "http://127.0.0.1:4310"), configPath: join(profile, "opencode.jsonc"), stateDir: join(profile, "corporate-state"), skillsDir: join(profile, "skills"),
+    connectionFile: env.CORP_OPENCODE_CONNECTION_FILE ?? settings.connectionFile ?? serviceFile,
+    refreshMs: interval(env.CORP_REFRESH_INTERVAL_MS ?? settings.refreshMs, 3600000), loadPollMs: interval(env.CORP_LOAD_INTERVAL_MS ?? settings.loadPollMs, 30000) };
+}
