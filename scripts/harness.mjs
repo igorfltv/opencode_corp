@@ -15,7 +15,7 @@ export async function eventually(fn, timeout = 12000) {
   }
   throw new Error(`Timed out${last ? `: ${last.message}` : ""}`);
 }
-export async function launch({ directory, port = 0, refreshMs = 3600000, loadPollMs = 30000, quiet = true } = {}) {
+export async function launch({ directory, port = 0, refreshMs = 3600000, loadPollMs = 30000, quiet = true, pluginSpec = root, pluginTimeout = 12000 } = {}) {
   directory = resolve(directory ?? join(root, ".demo"));
   const profile = join(directory, "config", "opencode");
   const project = join(directory, "project");
@@ -26,7 +26,7 @@ export async function launch({ directory, port = 0, refreshMs = 3600000, loadPol
   // Изолированный корпоративный демопрофиль. Рабочий конфиг не меняется.
   "model": "corporate/demo-code",
   "share": "disabled",
-  "plugins": [${JSON.stringify(root)}]
+  "plugins": [${JSON.stringify(pluginSpec)}]
 }\n`);
   if (!await exists(join(project, "README.md"))) await writeFile(join(project, "README.md"), "# Корпоративный OpenCode\n\nНачните с /login. Это отдельная папка для демонстрации.\n");
   const emulator = createEmulator({ port });
@@ -73,7 +73,7 @@ export async function launch({ directory, port = 0, refreshMs = 3600000, loadPol
     clearTimeout(timeout); emulator.stop();
   };
   try {
-    await eventually(async () => (await request("/api/command")).data?.some((c) => c.name === "login"));
+    await eventually(async () => (await request("/api/command")).data?.some((c) => c.name === "login"), pluginTimeout);
     const { data: session } = await request("/api/session", { method: "POST", body: { title: "Корпоративный плагин · демо", location: { directory: project }, model: { providerID: "corporate", id: "demo-code" } } });
     return { directory, profile, project, configPath, connectionFile, emulator, request, stop, session, url: connection.url,
       command: (name) => request(`/api/session/${session.id}/command`, { method: "POST", body: { name, text: "" } }),

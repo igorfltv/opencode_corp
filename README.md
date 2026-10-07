@@ -17,6 +17,8 @@
 
 OpenCode v2 устанавливает Git-плагин из пакета в корне репозитория. В корне
 лежат собранные `server.js` и `tui.js`; сборка на компьютере пользователя не нужна.
+Команда разработки называется `bun run bundle`: npm запускает дополнительную
+подготовку Git-зависимости, если в пакете есть lifecycle-скрипт `build`.
 Существующие настройки в `opencode.jsonc` можно сохранить: достаточно заменить
 локальный путь в массиве `plugins` на GitHub-запись. Для обновления ветки
 используйте `opencode plugin update github:igorfltv/opencode_corp#main` либо
@@ -35,7 +37,7 @@ OpenCode v2 устанавливает Git-плагин из пакета в к�
 git clone https://github.com/igorfltv/opencode_corp.git
 cd opencode_corp
 bun install --frozen-lockfile
-bun run build
+bun run bundle
 bun run demo
 ```
 
@@ -241,7 +243,7 @@ manifest и инструкция. Runtime-зависимости включен�
 
 ```sh
 bun test tests
-bun run build
+bun run bundle
 bun run test:integration
 ```
 
