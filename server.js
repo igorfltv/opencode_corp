@@ -2058,6 +2058,23 @@ class CorporateRuntime {
     await this.syncMCP?.(this.mcpConfigs);
     await Promise.all([...this.mcpReloaders].map((reload) => reload()));
   }
+  async mcpConnectionStates(ids) {
+    if (!ids.length || this.options.client !== "opencode" || typeof this.bridge.request !== "function")
+      return null;
+    let states = [];
+    for (let attempt = 0;attempt < 12; attempt++) {
+      const { data } = await this.bridge.request("/api/mcp");
+      states = ids.map((id) => {
+        const state = data.find((entry) => entry.name === `corp_${id}`)?.status;
+        return { id, status: state?.status ?? "pending", rejected: state?.status === "failed" && /HTTP 401\b/.test(state.error ?? "") };
+      });
+      if (states.every((entry) => entry.status === "connected"))
+        break;
+      if (attempt < 11)
+        await sleep(250, this.abort.signal);
+    }
+    return states;
+  }
   async refreshMCPCatalog() {
     const { data } = await this.api.request("/api/mcps", { token: this.token(), signal: this.abort.signal });
     const catalog = validateMCPCatalog(data, this.options.serverURL);
@@ -2250,7 +2267,7 @@ class CorporateRuntime {
       type: "multiselect",
       key: "mcps",
       title: "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 MCP",
-      description: `\u041B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0432\u0432\u043E\u0434\u044F\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
+      description: `\u0414\u043B\u044F \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u0445 MCP \u043E\u0442\u043A\u0440\u043E\u0435\u0442\u0441\u044F \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0430\u044F \u0444\u043E\u0440\u043C\u0430 \u0432\u0432\u043E\u0434\u0430 \u0438\u043B\u0438 \u0437\u0430\u043C\u0435\u043D\u044B \u0442\u043E\u043A\u0435\u043D\u043E\u0432, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
       custom: false,
       minItems: 0,
       default: selected,
@@ -2270,7 +2287,7 @@ class CorporateRuntime {
           if (!item)
             throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D MCP \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
           return item;
-        }).filter((item) => !selected.includes(item.id));
+        });
         let tokens = new Map;
         if (requested.length) {
           const page2 = await captureSecrets(requested);
@@ -2295,9 +2312,23 @@ class CorporateRuntime {
           await this.reloadMCP();
         });
         await reload();
-        await this.bridge.message(sessionID, "MCP \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u044B", ids.length ? `${ids.map((id) => catalog.find((item) => item.id === id).name).join(`
-`)}
-\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 /mcps.` : "\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B.");
+        let states = null;
+        try {
+          states = await this.mcpConnectionStates(ids);
+        } catch {}
+        const names = ids.map((id) => catalog.find((item) => item.id === id).name).join(`
+`);
+        const failed = states?.filter((entry) => entry.status !== "connected") ?? [];
+        if (failed.length) {
+          const details = failed.map((entry) => `${catalog.find((item) => item.id === entry.id).name}: ${entry.rejected ? "\u0442\u043E\u043A\u0435\u043D \u043E\u0442\u043A\u043B\u043E\u043D\u0451\u043D (HTTP 401)" : "\u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E"}`).join(`
+`);
+          await this.bridge.message(sessionID, "MCP \u043D\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B", `\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B \u0432 \u043A\u043E\u043D\u0444\u0438\u0433, \u043D\u043E \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E:
+${details}
+\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /mcps_load, \u0447\u0442\u043E\u0431\u044B \u0437\u0430\u043C\u0435\u043D\u0438\u0442\u044C \u0442\u043E\u043A\u0435\u043D\u044B.`);
+        } else {
+          await this.bridge.message(sessionID, "MCP \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u044B", ids.length ? `${names}
+${states ? "\u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E." : "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 /mcps."}` : "\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B.");
+        }
       } finally {
         this.forms.delete(sessionID);
         await this.bridge.cancel(sessionID, form.id);
@@ -2448,8 +2479,8 @@ class KiloBridge {
 }
 
 // src/kilo-control.js
-var key = Symbol.for("company.kilo.corporate.control.v3");
-var legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
+var key = Symbol.for("company.kilo.corporate.control.v4");
+var legacyKeys = [Symbol.for("company.kilo.corporate.control.v3"), Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
 var commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
 async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
@@ -2676,7 +2707,7 @@ var rpc = {
   methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } }
 };
-var registryKey = Symbol.for("company.opencode.corporate.runtime.v5");
+var registryKey = Symbol.for("company.opencode.corporate.runtime.v6");
 var plugin_default = {
   id: "company-corporate",
   async server(_context, settings) {

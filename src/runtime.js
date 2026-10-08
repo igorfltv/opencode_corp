@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { rm } from "node:fs/promises";
-import { atomicWrite, exists, readJSON, serial, trustedURL } from "./io.js";
+import { atomicWrite, exists, readJSON, serial, sleep, trustedURL } from "./io.js";
 import { CorporateAPI, Unauthorized } from "./api.js";
 import { applyConfig, removeProvider, validateConfig } from "./config.js";
 import { validateCatalog, installSkills } from "./skills.js";
@@ -111,6 +111,20 @@ export class CorporateRuntime {
     await this.reloadMCP();
   }
   async reloadMCP() { await this.syncMCP?.(this.mcpConfigs); await Promise.all([...this.mcpReloaders].map((reload) => reload())); }
+  async mcpConnectionStates(ids) {
+    if (!ids.length || this.options.client !== "opencode" || typeof this.bridge.request !== "function") return null;
+    let states = [];
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const { data } = await this.bridge.request("/api/mcp");
+      states = ids.map((id) => {
+        const state = data.find((entry) => entry.name === `corp_${id}`)?.status;
+        return { id, status: state?.status ?? "pending", rejected: state?.status === "failed" && /HTTP 401\b/.test(state.error ?? "") };
+      });
+      if (states.every((entry) => entry.status === "connected")) break;
+      if (attempt < 11) await sleep(250, this.abort.signal);
+    }
+    return states;
+  }
   async refreshMCPCatalog() {
     const { data } = await this.api.request("/api/mcps", { token: this.token(), signal: this.abort.signal });
     const catalog = validateMCPCatalog(data, this.options.serverURL);
@@ -250,7 +264,7 @@ export class CorporateRuntime {
     if (!catalog.length) return this.bridge.message(sessionID, "Корпоративные MCP", "Для вашей учётной записи нет доступных MCP.");
     const selected = this.mcpConfigs.map(({ name }) => name.slice(5));
     const form = await this.bridge.form(sessionID, "Подключить корпоративные MCP", [{
-      type: "multiselect", key: "mcps", title: "Выберите MCP", description: `Личные токены вводятся отдельно в локальном браузере, не в чате ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
+      type: "multiselect", key: "mcps", title: "Выберите MCP", description: `Для отмеченных MCP откроется локальная форма ввода или замены токенов, не в чате ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
       custom: false, minItems: 0, default: selected,
       options: catalog.map((item) => ({ value: item.id, label: item.name, description: item.description })),
     }]);
@@ -266,7 +280,7 @@ export class CorporateRuntime {
           const item = catalog.find((entry) => entry.id === id);
           if (!item) throw new Error("Выбран MCP вне доступного каталога");
           return item;
-        }).filter((item) => !selected.includes(item.id));
+        });
         let tokens = new Map();
         if (requested.length) {
           const page = await captureSecrets(requested);
@@ -289,7 +303,16 @@ export class CorporateRuntime {
           await this.reloadMCP();
         });
         await reload();
-        await this.bridge.message(sessionID, "MCP настроены", ids.length ? `${ids.map((id) => catalog.find((item) => item.id === id).name).join("\n")}\nПроверьте подключение через /mcps.` : "Все корпоративные MCP отключены.");
+        let states = null;
+        try { states = await this.mcpConnectionStates(ids); } catch { /* The MCP config is already applied; report that status could not be checked. */ }
+        const names = ids.map((id) => catalog.find((item) => item.id === id).name).join("\n");
+        const failed = states?.filter((entry) => entry.status !== "connected") ?? [];
+        if (failed.length) {
+          const details = failed.map((entry) => `${catalog.find((item) => item.id === entry.id).name}: ${entry.rejected ? "токен отклонён (HTTP 401)" : "соединение не установлено"}`).join("\n");
+          await this.bridge.message(sessionID, "MCP не подключены", `Настройки добавлены в конфиг, но соединение не установлено:\n${details}\nПовторите /mcps_load, чтобы заменить токены.`);
+        } else {
+          await this.bridge.message(sessionID, "MCP настроены", ids.length ? `${names}\n${states ? "Соединение установлено." : "Проверьте подключение через /mcps."}` : "Все корпоративные MCP отключены.");
+        }
       } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
     })(), sessionID);
   }
