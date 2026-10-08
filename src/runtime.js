@@ -18,6 +18,9 @@ export class CorporateRuntime {
     this.options = options;
     this.api = adapters.api ?? new CorporateAPI(options.serverURL);
     this.bridge = adapters.bridge ?? new OpenCodeBridge(options.connectionFile);
+    this.applyConfig = adapters.applyConfig ?? applyConfig;
+    this.removeProvider = adapters.removeProvider ?? removeProvider;
+    this.syncMCP = adapters.syncMCP;
     this.open = adapters.open ?? openBrowser;
     this.desktop = adapters.notify ?? notifyDesktop;
     this.queue = serial();
@@ -41,8 +44,9 @@ export class CorporateRuntime {
       await rm(join(this.options.stateDir, "sync.json"), { force: true });
       const tokenPath = join(this.options.stateDir, "access-token");
       if (await exists(tokenPath)) await atomicWrite(tokenPath, "");
-      await removeProvider(this.options.configPath);
+      await this.removeProvider(this.options.configPath, this.options.client);
       await clearMCP(this.options.stateDir);
+      await this.syncMCP?.([]);
       this.state = {};
     }
     if (this.authenticated()) await this.refreshMCPCatalog().catch(() => {});
@@ -73,7 +77,7 @@ export class CorporateRuntime {
         const response = await this.api.request("/api/config", { token, etag: this.state.etag, signal: this.abort.signal });
         if (response.unchanged) this.state = { ...this.state, checkedAt: new Date().toISOString(), lastError: null };
         else {
-          const applied = await applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null });
+          const applied = await this.applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null });
           this.state = { ...applied, etag: response.etag, lastError: null };
           if (applied.changed) await this.notice(`Корпоративный конфиг обновлён: версия ${applied.revision}`, "success");
         }
@@ -101,7 +105,7 @@ export class CorporateRuntime {
     this.mcpConfigs = [];
     await this.reloadMCP();
   }
-  async reloadMCP() { await Promise.all([...this.mcpReloaders].map((reload) => reload())); }
+  async reloadMCP() { await this.syncMCP?.(this.mcpConfigs); await Promise.all([...this.mcpReloaders].map((reload) => reload())); }
   async refreshMCPCatalog() {
     const { data } = await this.api.request("/api/mcps", { token: this.token(), signal: this.abort.signal });
     const catalog = validateMCPCatalog(data, this.options.serverURL);
@@ -140,7 +144,7 @@ export class CorporateRuntime {
       }
     }).finally(() => this.jobs.delete(promise));
   }
-  async login(sessionID) {
+  async login(sessionID, reload = async () => {}) {
     if (this.loginFlow || this.loginPending) throw new Error("Вход уже открыт в браузере");
     this.loginPending = true;
     const generation = this.authGeneration;
@@ -148,11 +152,12 @@ export class CorporateRuntime {
     try { flow = await startLogin(this.api); } finally { this.loginPending = false; }
     if (generation !== this.authGeneration || this.abort.signal.aborted) { flow.cancel(); return; }
     this.loginFlow = flow;
-    const form = await this.bridge.form(sessionID, "Вход в корпоративный OpenCode", [
+    const clientName = this.options.client === "kilo" ? "Kilo" : "OpenCode";
+    const form = await this.bridge.form(sessionID, `Вход в корпоративный ${clientName}`, [
       { type: "external", key: "login", title: "Открыть страницу входа", url: flow.url },
-      { type: "string", key: "waiting", title: "Вход в корпоративный OpenCode", description: `В открывшемся браузере выберите тестовую учётную запись. Пароль не нужен. Если браузер не открылся, скопируйте адрес: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "Ожидаю входа в браузере" }] },
+      { type: "string", key: "waiting", title: `Вход в корпоративный ${clientName}`, description: `В открывшемся браузере выберите тестовую учётную запись. Пароль не нужен. Если браузер не открылся, скопируйте адрес: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "Ожидаю входа в браузере" }] },
     ]).catch((error) => { flow.cancel(); this.loginFlow = null; throw error; });
-    this.open(flow.url).catch(() => this.notice("Откройте ссылку входа в форме OpenCode", "info"));
+    this.open(flow.url).catch(() => this.notice(`Откройте ссылку входа в форме ${clientName}`, "info"));
     const cancellation = new AbortController();
     this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => { if (answer === null) flow.cancel(); }).catch(() => {});
     this.track((async () => {
@@ -168,9 +173,10 @@ export class CorporateRuntime {
           await this.reloadMCP();
           await atomicWrite(join(this.options.stateDir, "credential.json"), JSON.stringify(this.credential));
           await atomicWrite(join(this.options.stateDir, "access-token"), this.credential.accessToken);
-          this.state = { ...(await applyConfig({ ...this.options, envelope: result.configuration })), lastError: null };
+          this.state = { ...(await this.applyConfig({ ...this.options, envelope: result.configuration })), lastError: null };
           await this.persistState();
         });
+        await reload();
         await this.bridge.message(sessionID, "Вход выполнен", `${result.user.name}. Конфиг версии ${this.state.revision} применён. Доступны /refresh_config и /skills_load.`);
         await this.notice("Вход выполнен; корпоративный конфиг применён", "success");
         await this.pollLoad();
@@ -207,14 +213,14 @@ export class CorporateRuntime {
       } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
     })(), sessionID);
   }
-  async mcps(sessionID) {
+  async mcps(sessionID, reload = async () => {}) {
     if (this.forms.has(sessionID)) throw new Error("Форма выбора уже открыта");
     const token = this.token();
     const catalog = await this.refreshMCPCatalog();
     if (!catalog.length) return this.bridge.message(sessionID, "Корпоративные MCP", "Для вашей учётной записи нет доступных MCP.");
     const selected = this.mcpConfigs.map(({ name }) => name.slice(5));
     const form = await this.bridge.form(sessionID, "Подключить корпоративные MCP", [{
-      type: "multiselect", key: "mcps", title: "Выберите MCP", description: "Личные токены вводятся отдельно в локальном браузере, не в чате OpenCode.",
+      type: "multiselect", key: "mcps", title: "Выберите MCP", description: `Личные токены вводятся отдельно в локальном браузере, не в чате ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
       custom: false, minItems: 0, default: selected,
       options: catalog.map((item) => ({ value: item.id, label: item.name, description: item.description })),
     }]);
@@ -250,6 +256,7 @@ export class CorporateRuntime {
           this.mcpConfigs = await saveMCPSelection(this.options.stateDir, ids, catalog, tokens);
           await this.reloadMCP();
         });
+        await reload();
         await this.bridge.message(sessionID, "MCP настроены", ids.length ? `${ids.map((id) => catalog.find((item) => item.id === id).name).join("\n")}\nПроверьте подключение через /mcps.` : "Все корпоративные MCP отключены.");
       } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
     })(), sessionID);
@@ -263,7 +270,7 @@ export class CorporateRuntime {
       await this.invalidate();
       this.state = {}; await this.persistState();
       this.load = { level: "unknown", message: "Вход не выполнен", checkedAt: null };
-      try { await removeProvider(this.options.configPath); }
+      try { await this.removeProvider(this.options.configPath, this.options.client); }
       finally { if (token) await this.api.request("/oauth/revoke", { token, method: "POST", body: {} }).catch(() => {}); }
     });
   }
@@ -274,10 +281,11 @@ export class CorporateRuntime {
 }
 
 export function optionsFromEnv(env = process.env, settings = {}) {
-  const profile = resolve(env.CORP_PROFILE_DIR ?? settings.profileDir ?? env.OPENCODE_CONFIG_DIR ?? join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode"));
+  const client = settings.client === "kilo" ? "kilo" : "opencode";
+  const profile = resolve((client === "kilo" ? env.CORP_KILO_PROFILE_DIR : undefined) ?? env.CORP_PROFILE_DIR ?? settings.profileDir ?? (client === "kilo" ? env.KILO_CONFIG_DIR : env.OPENCODE_CONFIG_DIR) ?? join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), client));
   const serviceFile = join(env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "opencode", "service.json");
   const interval = (value, fallback) => { const n = Number(value ?? fallback); if (!Number.isFinite(n) || n < 50) throw new Error("Некорректный интервал опроса"); return n; };
-  return { serverURL: trustedURL(env.CORP_SERVER_URL ?? settings.serverURL ?? "http://127.0.0.1:4310"), configPath: join(profile, "opencode.jsonc"), stateDir: join(profile, "corporate-state"), skillsDir: join(profile, "skills"),
+  return { client, serverURL: trustedURL(env.CORP_SERVER_URL ?? settings.serverURL ?? "http://127.0.0.1:4310"), configPath: join(profile, client === "kilo" ? "kilo.jsonc" : "opencode.jsonc"), stateDir: join(profile, "corporate-state"), skillsDir: join(profile, "skills"),
     connectionFile: env.CORP_OPENCODE_CONNECTION_FILE ?? settings.connectionFile ?? serviceFile,
     refreshMs: interval(env.CORP_REFRESH_INTERVAL_MS ?? settings.refreshMs, 3600000), loadPollMs: interval(env.CORP_LOAD_INTERVAL_MS ?? settings.loadPollMs, 30000) };
 }

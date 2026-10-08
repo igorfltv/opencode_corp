@@ -26,36 +26,66 @@ export function parseConfig(text) {
   if (errors.length || !object(value)) throw new Error("opencode.jsonc содержит ошибку; файл не изменён");
   return value;
 }
-export async function applyConfig({ configPath, stateDir, envelope, serverURL, previous }) {
+export async function applyConfig({ configPath, stateDir, envelope, serverURL, previous, client = "opencode" }) {
   const clean = validateConfig(envelope, serverURL);
   const fingerprint = digest(JSON.stringify(clean));
   if (previous && clean.revision < previous.revision) throw new Error("Сервер прислал более старую версию конфига");
   if (previous?.revision === clean.revision && previous.fingerprint !== fingerprint) throw new Error("Содержимое конфига изменилось без увеличения версии");
   let text = await readFile(configPath, "utf8");
   const current = parseConfig(text);
-  const provider = {
-    ...clean.config.providers.corporate,
-    package: "@ai-sdk/openai-compatible",
-    settings: { ...clean.config.providers.corporate.settings, apiKey: `{file:${join(stateDir, "access-token")}}` },
-  };
-  const changed = JSON.stringify(current.providers?.corporate) !== JSON.stringify(provider);
+  const source = clean.config.providers.corporate;
+  const provider = client === "kilo"
+    ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey: `{file:${join(stateDir, "access-token")}}` }, models: source.models }
+    : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey: `{file:${join(stateDir, "access-token")}}` } };
+  const field = client === "kilo" ? "provider" : "providers";
+  const changed = JSON.stringify(current[field]?.corporate) !== JSON.stringify(provider);
   if (changed) {
     const backup = `${configPath}.before-corporate.bak`;
     if (!await exists(backup)) await atomicWrite(backup, text);
-    text = applyEdits(text, modify(text, ["providers", "corporate"], provider, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+    text = applyEdits(text, modify(text, [field, "corporate"], provider, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
     parseConfig(text);
     await atomicWrite(configPath, text);
   }
   return { revision: clean.revision, fingerprint, changed, checkedAt: new Date().toISOString() };
 }
-export async function removeProvider(configPath) {
+export async function removeProvider(configPath, client = "opencode") {
   let text = await readFile(configPath, "utf8");
+  const original = text;
   const current = parseConfig(text);
-  if (!object(current.providers)) return;
-  const count = Object.keys(current.providers).length;
-  if (!Object.hasOwn(current.providers, "corporate") && count > 0) return;
-  const path = count <= 1 ? ["providers"] : ["providers", "corporate"];
-  text = applyEdits(text, modify(text, path, undefined, {}));
+  const field = client === "kilo" ? "provider" : "providers";
+  if (object(current[field])) {
+    const count = Object.keys(current[field]).length;
+    if (Object.hasOwn(current[field], "corporate") || count === 0) {
+      const path = count <= 1 ? [field] : [field, "corporate"];
+      text = applyEdits(text, modify(text, path, undefined, {}));
+    }
+  }
+  if (client === "kilo") {
+    for (const key of ["model", "small_model", "subagent_model"]) {
+      if (typeof current[key] === "string" && current[key].startsWith("corporate/")) text = applyEdits(text, modify(text, [key], undefined, {}));
+    }
+  }
+  if (text === original) return;
   parseConfig(text);
   await atomicWrite(configPath, text);
+}
+
+export async function syncKiloMCP(configPath, stateDir, configs) {
+  let text = await readFile(configPath, "utf8");
+  const current = parseConfig(text);
+  const existing = object(current.mcp) ? current.mcp : {};
+  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
+  const wanted = new Map(configs.map(({ name, config }) => [name, {
+    type: "remote", url: config.url, oauth: false,
+    headers: { Authorization: `Bearer {file:${join(stateDir, "mcp-tokens", name.slice(5))}}` },
+  }]));
+  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name)))) return false;
+  for (const name of managed) if (!wanted.has(name)) text = applyEdits(text, modify(text, ["mcp", name], undefined, {}));
+  for (const [name, config] of wanted) text = applyEdits(text, modify(text, ["mcp", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  if (!Object.keys(parseConfig(text).mcp ?? {}).length) text = applyEdits(text, modify(text, ["mcp"], undefined, {}));
+  parseConfig(text);
+  const backup = `${configPath}.before-corporate.bak`;
+  if (!await exists(backup)) await atomicWrite(backup, await readFile(configPath, "utf8"));
+  await atomicWrite(configPath, text);
+  return true;
 }

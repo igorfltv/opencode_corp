@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { createEmulator } from "../server/emulator.js";
 import { CorporateAPI, Unauthorized } from "../src/api.js";
 import { startLogin } from "../src/login.js";
-import { applyConfig, parseConfig, removeProvider, validateConfig } from "../src/config.js";
+import { applyConfig, parseConfig, removeProvider, syncKiloMCP, validateConfig } from "../src/config.js";
 import { installSkills, validateCatalog } from "../src/skills.js";
 import { optionsFromEnv, CorporateRuntime } from "../src/runtime.js";
 import { atomicWrite, digest, exists, random } from "../src/io.js";
@@ -119,6 +119,31 @@ test("patches only its provider, preserves JSONC comments and stores no token in
   expect((await stat(configPath)).mtimeMs).toBe(before);
 });
 
+test("Kilo config keeps other providers and MCPs while managing only corporate entries", async () => {
+  const root = await folder(), configPath = join(root, "kilo.jsonc"), stateDir = join(root, "corporate-state"), serverURL = "http://127.0.0.1:4310";
+  const original = '{\n // keep this\n "plugin": ["/tmp/company"],\n "model": "corporate/code", "small_model": "personal/small",\n "provider": {"personal":{"name":"Personal"}},\n "mcp": {"personal":{"type":"remote","url":"https://example.test/mcp"}}\n}\n';
+  await atomicWrite(configPath, original);
+  await applyConfig({ configPath, stateDir, serverURL, envelope: envelope(serverURL), client: "kilo" });
+  const provider = parseConfig(await readFile(configPath, "utf8")).provider;
+  expect(provider.personal.name).toBe("Personal");
+  expect(provider.corporate.npm).toBe("@ai-sdk/openai-compatible");
+  expect(provider.corporate.options.apiKey).toBe(`{file:${join(stateDir, "access-token")}}`);
+  expect(provider.corporate.options.baseURL).toBe(`${serverURL}/v1`);
+  expect(await readFile(`${configPath}.before-corporate.bak`, "utf8")).toBe(original);
+  await syncKiloMCP(configPath, stateDir, [{ name: "corp_jira", config: { url: `${serverURL}/mcp/jira` } }]);
+  const text = await readFile(configPath, "utf8"), config = parseConfig(text);
+  expect(text).toContain("// keep this");
+  expect(config.mcp.personal.url).toBe("https://example.test/mcp");
+  expect(config.mcp.corp_jira.headers.Authorization).toBe(`Bearer {file:${join(stateDir, "mcp-tokens/jira")}}`);
+  await syncKiloMCP(configPath, stateDir, []);
+  await removeProvider(configPath, "kilo");
+  const clean = parseConfig(await readFile(configPath, "utf8"));
+  expect(clean.provider).toEqual({ personal: { name: "Personal" } });
+  expect(clean.mcp).toEqual({ personal: { type: "remote", url: "https://example.test/mcp" } });
+  expect(clean.model).toBeUndefined();
+  expect(clean.small_model).toBe("personal/small");
+});
+
 test("removes the whole corporate provider block when it is the only provider", async () => {
   const root = await folder(), configPath = join(root, "opencode.jsonc");
   await atomicWrite(configPath, '{\n  // Keep the plugin\n  "plugins": ["github:igorfltv/opencode_corp#main"],\n  "providers": { "corporate": { "name": "Demo" } }\n}\n');
@@ -213,6 +238,9 @@ test("defaults to an hourly configuration refresh", () => {
   expect(github.configPath).toBe("/tmp/github-config/opencode/opencode.jsonc");
   expect(github.connectionFile).toBe("/tmp/github-state/opencode/service.json");
   expect(optionsFromEnv({ OPENCODE_CONFIG_DIR: "/tmp/custom-opencode" }).configPath).toBe("/tmp/custom-opencode/opencode.jsonc");
+  const kilo = optionsFromEnv({ XDG_CONFIG_HOME: "/tmp/config", KILO_CONFIG_DIR: "/tmp/kilo-profile", CORP_KILO_PROFILE_DIR: "/tmp/corp-kilo" }, { client: "kilo" });
+  expect(kilo.configPath).toBe("/tmp/corp-kilo/kilo.jsonc");
+  expect(kilo.skillsDir).toBe("/tmp/corp-kilo/skills");
 });
 
 test("an old load response cannot invalidate a newly logged-in account", async () => {

@@ -1469,7 +1469,7 @@ function parseConfig(text) {
     throw new Error("opencode.jsonc \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0448\u0438\u0431\u043A\u0443; \u0444\u0430\u0439\u043B \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u0451\u043D");
   return value;
 }
-async function applyConfig({ configPath, stateDir, envelope, serverURL, previous }) {
+async function applyConfig({ configPath, stateDir, envelope, serverURL, previous, client = "opencode" }) {
   const clean = validateConfig(envelope, serverURL);
   const fingerprint = digest(JSON.stringify(clean));
   if (previous && clean.revision < previous.revision)
@@ -1478,32 +1478,40 @@ async function applyConfig({ configPath, stateDir, envelope, serverURL, previous
     throw new Error("\u0421\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u043A\u043E\u043D\u0444\u0438\u0433\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u043E\u0441\u044C \u0431\u0435\u0437 \u0443\u0432\u0435\u043B\u0438\u0447\u0435\u043D\u0438\u044F \u0432\u0435\u0440\u0441\u0438\u0438");
   let text = await readFile2(configPath, "utf8");
   const current = parseConfig(text);
-  const provider = {
-    ...clean.config.providers.corporate,
-    package: "@ai-sdk/openai-compatible",
-    settings: { ...clean.config.providers.corporate.settings, apiKey: `{file:${join(stateDir, "access-token")}}` }
-  };
-  const changed = JSON.stringify(current.providers?.corporate) !== JSON.stringify(provider);
+  const source = clean.config.providers.corporate;
+  const provider = client === "kilo" ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey: `{file:${join(stateDir, "access-token")}}` }, models: source.models } : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey: `{file:${join(stateDir, "access-token")}}` } };
+  const field = client === "kilo" ? "provider" : "providers";
+  const changed = JSON.stringify(current[field]?.corporate) !== JSON.stringify(provider);
   if (changed) {
     const backup = `${configPath}.before-corporate.bak`;
     if (!await exists(backup))
       await atomicWrite(backup, text);
-    text = applyEdits(text, modify(text, ["providers", "corporate"], provider, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+    text = applyEdits(text, modify(text, [field, "corporate"], provider, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
     parseConfig(text);
     await atomicWrite(configPath, text);
   }
   return { revision: clean.revision, fingerprint, changed, checkedAt: new Date().toISOString() };
 }
-async function removeProvider(configPath) {
+async function removeProvider(configPath, client = "opencode") {
   let text = await readFile2(configPath, "utf8");
+  const original = text;
   const current = parseConfig(text);
-  if (!object(current.providers))
+  const field = client === "kilo" ? "provider" : "providers";
+  if (object(current[field])) {
+    const count = Object.keys(current[field]).length;
+    if (Object.hasOwn(current[field], "corporate") || count === 0) {
+      const path = count <= 1 ? [field] : [field, "corporate"];
+      text = applyEdits(text, modify(text, path, undefined, {}));
+    }
+  }
+  if (client === "kilo") {
+    for (const key of ["model", "small_model", "subagent_model"]) {
+      if (typeof current[key] === "string" && current[key].startsWith("corporate/"))
+        text = applyEdits(text, modify(text, [key], undefined, {}));
+    }
+  }
+  if (text === original)
     return;
-  const count = Object.keys(current.providers).length;
-  if (!Object.hasOwn(current.providers, "corporate") && count > 0)
-    return;
-  const path = count <= 1 ? ["providers"] : ["providers", "corporate"];
-  text = applyEdits(text, modify(text, path, undefined, {}));
   parseConfig(text);
   await atomicWrite(configPath, text);
 }
@@ -1854,6 +1862,9 @@ class CorporateRuntime {
     this.options = options;
     this.api = adapters.api ?? new CorporateAPI(options.serverURL);
     this.bridge = adapters.bridge ?? new OpenCodeBridge(options.connectionFile);
+    this.applyConfig = adapters.applyConfig ?? applyConfig;
+    this.removeProvider = adapters.removeProvider ?? removeProvider;
+    this.syncMCP = adapters.syncMCP;
     this.open = adapters.open ?? openBrowser;
     this.desktop = adapters.notify ?? notifyDesktop;
     this.queue = serial();
@@ -1879,8 +1890,9 @@ class CorporateRuntime {
       const tokenPath = join4(this.options.stateDir, "access-token");
       if (await exists(tokenPath))
         await atomicWrite(tokenPath, "");
-      await removeProvider(this.options.configPath);
+      await this.removeProvider(this.options.configPath, this.options.client);
       await clearMCP(this.options.stateDir);
+      await this.syncMCP?.([]);
       this.state = {};
     }
     if (this.authenticated())
@@ -1931,7 +1943,7 @@ class CorporateRuntime {
         if (response.unchanged)
           this.state = { ...this.state, checkedAt: new Date().toISOString(), lastError: null };
         else {
-          const applied = await applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null });
+          const applied = await this.applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null });
           this.state = { ...applied, etag: response.etag, lastError: null };
           if (applied.changed)
             await this.notice(`\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433 \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D: \u0432\u0435\u0440\u0441\u0438\u044F ${applied.revision}`, "success");
@@ -1972,6 +1984,7 @@ class CorporateRuntime {
     await this.reloadMCP();
   }
   async reloadMCP() {
+    await this.syncMCP?.(this.mcpConfigs);
     await Promise.all([...this.mcpReloaders].map((reload) => reload()));
   }
   async refreshMCPCatalog() {
@@ -2021,7 +2034,7 @@ class CorporateRuntime {
       }
     }).finally(() => this.jobs.delete(promise));
   }
-  async login(sessionID) {
+  async login(sessionID, reload = async () => {}) {
     if (this.loginFlow || this.loginPending)
       throw new Error("\u0412\u0445\u043E\u0434 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435");
     this.loginPending = true;
@@ -2037,15 +2050,16 @@ class CorporateRuntime {
       return;
     }
     this.loginFlow = flow;
-    const form = await this.bridge.form(sessionID, "\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode", [
+    const clientName = this.options.client === "kilo" ? "Kilo" : "OpenCode";
+    const form = await this.bridge.form(sessionID, `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, [
       { type: "external", key: "login", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0432\u0445\u043E\u0434\u0430", url: flow.url },
-      { type: "string", key: "waiting", title: "\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode", description: `\u0412 \u043E\u0442\u043A\u0440\u044B\u0432\u0448\u0435\u043C\u0441\u044F \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0442\u0435\u0441\u0442\u043E\u0432\u0443\u044E \u0443\u0447\u0451\u0442\u043D\u0443\u044E \u0437\u0430\u043F\u0438\u0441\u044C. \u041F\u0430\u0440\u043E\u043B\u044C \u043D\u0435 \u043D\u0443\u0436\u0435\u043D. \u0415\u0441\u043B\u0438 \u0431\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u043B\u0441\u044F, \u0441\u043A\u043E\u043F\u0438\u0440\u0443\u0439\u0442\u0435 \u0430\u0434\u0440\u0435\u0441: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "\u041E\u0436\u0438\u0434\u0430\u044E \u0432\u0445\u043E\u0434\u0430 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435" }] }
+      { type: "string", key: "waiting", title: `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, description: `\u0412 \u043E\u0442\u043A\u0440\u044B\u0432\u0448\u0435\u043C\u0441\u044F \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0442\u0435\u0441\u0442\u043E\u0432\u0443\u044E \u0443\u0447\u0451\u0442\u043D\u0443\u044E \u0437\u0430\u043F\u0438\u0441\u044C. \u041F\u0430\u0440\u043E\u043B\u044C \u043D\u0435 \u043D\u0443\u0436\u0435\u043D. \u0415\u0441\u043B\u0438 \u0431\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u043B\u0441\u044F, \u0441\u043A\u043E\u043F\u0438\u0440\u0443\u0439\u0442\u0435 \u0430\u0434\u0440\u0435\u0441: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "\u041E\u0436\u0438\u0434\u0430\u044E \u0432\u0445\u043E\u0434\u0430 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435" }] }
     ]).catch((error) => {
       flow.cancel();
       this.loginFlow = null;
       throw error;
     });
-    this.open(flow.url).catch(() => this.notice("\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0441\u0441\u044B\u043B\u043A\u0443 \u0432\u0445\u043E\u0434\u0430 \u0432 \u0444\u043E\u0440\u043C\u0435 OpenCode", "info"));
+    this.open(flow.url).catch(() => this.notice(`\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0441\u0441\u044B\u043B\u043A\u0443 \u0432\u0445\u043E\u0434\u0430 \u0432 \u0444\u043E\u0440\u043C\u0435 ${clientName}`, "info"));
     const cancellation = new AbortController;
     this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => {
       if (answer === null)
@@ -2066,9 +2080,10 @@ class CorporateRuntime {
           await this.reloadMCP();
           await atomicWrite(join4(this.options.stateDir, "credential.json"), JSON.stringify(this.credential));
           await atomicWrite(join4(this.options.stateDir, "access-token"), this.credential.accessToken);
-          this.state = { ...await applyConfig({ ...this.options, envelope: result.configuration }), lastError: null };
+          this.state = { ...await this.applyConfig({ ...this.options, envelope: result.configuration }), lastError: null };
           await this.persistState();
         });
+        await reload();
         await this.bridge.message(sessionID, "\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", `${result.user.name}. \u041A\u043E\u043D\u0444\u0438\u0433 \u0432\u0435\u0440\u0441\u0438\u0438 ${this.state.revision} \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B /refresh_config \u0438 /skills_load.`);
         await this.notice("\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D; \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433 \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D", "success");
         await this.pollLoad();
@@ -2119,7 +2134,7 @@ class CorporateRuntime {
       }
     })(), sessionID);
   }
-  async mcps(sessionID) {
+  async mcps(sessionID, reload = async () => {}) {
     if (this.forms.has(sessionID))
       throw new Error("\u0424\u043E\u0440\u043C\u0430 \u0432\u044B\u0431\u043E\u0440\u0430 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430");
     const token = this.token();
@@ -2131,7 +2146,7 @@ class CorporateRuntime {
       type: "multiselect",
       key: "mcps",
       title: "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 MCP",
-      description: "\u041B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0432\u0432\u043E\u0434\u044F\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 OpenCode.",
+      description: `\u041B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0432\u0432\u043E\u0434\u044F\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
       custom: false,
       minItems: 0,
       default: selected,
@@ -2174,6 +2189,7 @@ class CorporateRuntime {
           this.mcpConfigs = await saveMCPSelection(this.options.stateDir, ids, catalog, tokens);
           await this.reloadMCP();
         });
+        await reload();
         await this.bridge.message(sessionID, "MCP \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u044B", ids.length ? `${ids.map((id) => catalog.find((item) => item.id === id).name).join(`
 `)}
 \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 /mcps.` : "\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B.");
@@ -2195,7 +2211,7 @@ class CorporateRuntime {
       await this.persistState();
       this.load = { level: "unknown", message: "\u0412\u0445\u043E\u0434 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", checkedAt: null };
       try {
-        await removeProvider(this.options.configPath);
+        await this.removeProvider(this.options.configPath, this.options.client);
       } finally {
         if (token)
           await this.api.request("/oauth/revoke", { token, method: "POST", body: {} }).catch(() => {});
@@ -2210,7 +2226,8 @@ class CorporateRuntime {
   }
 }
 function optionsFromEnv(env = process.env, settings = {}) {
-  const profile = resolve(env.CORP_PROFILE_DIR ?? settings.profileDir ?? env.OPENCODE_CONFIG_DIR ?? join4(env.XDG_CONFIG_HOME ?? join4(homedir(), ".config"), "opencode"));
+  const client = settings.client === "kilo" ? "kilo" : "opencode";
+  const profile = resolve((client === "kilo" ? env.CORP_KILO_PROFILE_DIR : undefined) ?? env.CORP_PROFILE_DIR ?? settings.profileDir ?? (client === "kilo" ? env.KILO_CONFIG_DIR : env.OPENCODE_CONFIG_DIR) ?? join4(env.XDG_CONFIG_HOME ?? join4(homedir(), ".config"), client));
   const serviceFile = join4(env.XDG_STATE_HOME ?? join4(homedir(), ".local", "state"), "opencode", "service.json");
   const interval = (value, fallback) => {
     const n = Number(value ?? fallback);
@@ -2219,8 +2236,9 @@ function optionsFromEnv(env = process.env, settings = {}) {
     return n;
   };
   return {
+    client,
     serverURL: trustedURL(env.CORP_SERVER_URL ?? settings.serverURL ?? "http://127.0.0.1:4310"),
-    configPath: join4(profile, "opencode.jsonc"),
+    configPath: join4(profile, client === "kilo" ? "kilo.jsonc" : "opencode.jsonc"),
     stateDir: join4(profile, "corporate-state"),
     skillsDir: join4(profile, "skills"),
     connectionFile: env.CORP_OPENCODE_CONNECTION_FILE ?? settings.connectionFile ?? serviceFile,
@@ -2238,6 +2256,9 @@ var rpc = {
 var registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
 var plugin_default = {
   id: "company-corporate",
+  async server() {
+    return {};
+  },
   async setup(context) {
     const options = optionsFromEnv(process.env, context.options);
     const registry = globalThis[registryKey] ??= new Map;
