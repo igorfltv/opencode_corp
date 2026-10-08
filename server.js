@@ -2235,7 +2235,7 @@ var rpc = {
   methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } }
 };
-var registryKey = Symbol.for("company.opencode.corporate.runtime.v1");
+var registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
 var plugin_default = {
   id: "company-corporate",
   async setup(context) {

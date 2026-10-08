@@ -5,7 +5,8 @@ const rpc = {
   methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } },
 };
-const registryKey = Symbol.for("company.opencode.corporate.runtime.v1");
+// A changed runtime shape must not reuse an instance left by a hot-reloaded package.
+const registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
 export default {
   id: "company-corporate",
   async setup(context) {
