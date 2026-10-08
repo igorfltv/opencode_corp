@@ -2277,6 +2277,7 @@ function optionsFromEnv(env = process.env, settings = {}) {
 // src/kilo-control.js
 import { createServer as createServer3 } from "http";
 import { timingSafeEqual as timingSafeEqual2 } from "crypto";
+import { rmSync } from "fs";
 import { join as join5 } from "path";
 
 // src/kilo-bridge.js
@@ -2460,7 +2461,20 @@ ${lights[status.load.level]} ${status.load.message}`);
       server.listen(0, "127.0.0.1", resolve2);
     });
     server.unref();
-    await atomicWrite(join5(options.stateDir, "control.json"), JSON.stringify({ port: server.address().port, secret }));
+    const state = JSON.stringify({ port: server.address().port, secret });
+    const ownFile = join5(options.stateDir, `control-${process.pid}.json`);
+    server.on("close", () => {
+      try {
+        rmSync(ownFile, { force: true });
+      } catch {}
+    });
+    process.once("exit", () => {
+      try {
+        rmSync(ownFile, { force: true });
+      } catch {}
+    });
+    await atomicWrite(ownFile, state);
+    await atomicWrite(join5(options.stateDir, "control.json"), state);
     return { runtime, server, bridge };
   } catch (error) {
     server.close();

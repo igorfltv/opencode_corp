@@ -98,6 +98,8 @@ test("Kilo VS Code control executes login and status through an authenticated lo
     const endpoint = `http://127.0.0.1:${control.server.address().port}`;
     const state = JSON.parse(await readFile(join(root, "corporate-state/control.json"), "utf8"));
     expect(state.port).toBe(control.server.address().port);
+    const ownState = JSON.parse(await readFile(join(root, `corporate-state/control-${process.pid}.json`), "utf8"));
+    expect(ownState.port).toBe(state.port);
     const request = (command, token = state.secret) => fetch(`${endpoint}/command/${command}`, {
       method: "POST", headers: { Authorization: `Bearer ${token}` },
     });

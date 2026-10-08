@@ -46,11 +46,11 @@ index 2fd84d0..f0a9589 100644
      await this.handleSendMessage(
 diff --git a/packages/kilo-vscode/src/kilo-provider/corporate-command.ts b/packages/kilo-vscode/src/kilo-provider/corporate-command.ts
 new file mode 100644
-index 0000000..dae2fdd
+index 0000000..5f6782f
 --- /dev/null
 +++ b/packages/kilo-vscode/src/kilo-provider/corporate-command.ts
-@@ -0,0 +1,55 @@
-+import { readFile, stat } from "node:fs/promises"
+@@ -0,0 +1,74 @@
++import { readFile, readdir, stat } from "node:fs/promises"
 +import { homedir } from "node:os"
 +import { join, resolve } from "node:path"
 +
@@ -71,22 +71,41 @@ index 0000000..dae2fdd
 +      process.env.KILO_CONFIG_DIR ??
 +      join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "kilo"),
 +  )
-+  const file = join(dir, "corporate-state", "control.json")
-+  const info = await stat(file)
-+  if (info.mode & 0o077) throw new Error("Небезопасные права доступа к корпоративному control.json")
-+  const control: unknown = JSON.parse(await readFile(file, "utf8"))
-+  if (!control || typeof control !== "object") throw new Error("Некорректный корпоративный control.json")
-+  const { port, secret } = control as { port?: unknown; secret?: unknown }
-+  if (
-+    !Number.isInteger(port) ||
-+    Number(port) < 1 ||
-+    Number(port) > 65535 ||
-+    typeof secret !== "string" ||
-+    !/^[A-Za-z0-9_-]{43}$/.test(secret)
-+  ) {
-+    throw new Error("Некорректный корпоративный control.json")
++  const directory = join(dir, "corporate-state")
++  const files = (await readdir(directory))
++    .filter((name) => /^control-\d+\.json$/.test(name))
++    .sort((left, right) => Number(left.match(/\d+/)?.[0]) - Number(right.match(/\d+/)?.[0]))
++  const controls = await Promise.all([...files, "control.json"].map((name) => active(join(directory, name))))
++  const selected = controls.find((item) => item !== undefined)
++  if (!selected) throw new Error("Корпоративный плагин Kilo не запущен")
++  return selected
++}
++
++async function active(file: string) {
++  try {
++    const info = await stat(file)
++    if (info.mode & 0o077) throw new Error("Небезопасные права доступа к корпоративному control.json")
++    const control: unknown = JSON.parse(await readFile(file, "utf8"))
++    if (!control || typeof control !== "object") throw new Error("Некорректный корпоративный control.json")
++    const { port, secret } = control as { port?: unknown; secret?: unknown }
++    if (
++      !Number.isInteger(port) ||
++      Number(port) < 1 ||
++      Number(port) > 65535 ||
++      typeof secret !== "string" ||
++      !/^[A-Za-z0-9_-]{43}$/.test(secret)
++    ) {
++      throw new Error("Некорректный корпоративный control.json")
++    }
++    const state = { port: Number(port), secret }
++    const response = await fetch(`http://127.0.0.1:${state.port}/health`, {
++      headers: { Authorization: `Bearer ${state.secret}` },
++      signal: AbortSignal.timeout(1000),
++    })
++    return response.ok ? state : undefined
++  } catch {
++    return undefined
 +  }
-+  return { port: Number(port), secret }
 +}
 +
 +export async function corporateCommand(name: string): Promise<{ message: string; reload: boolean }> {
@@ -105,6 +124,52 @@ index 0000000..dae2fdd
 +    throw new Error("Некорректный ответ корпоративного плагина")
 +  return { message: data.message, reload: data.reload }
 +}
+diff --git a/packages/kilo-vscode/tests/unit/corporate-command.test.ts b/packages/kilo-vscode/tests/unit/corporate-command.test.ts
+new file mode 100644
+index 0000000..8ddb5f3
+--- /dev/null
++++ b/packages/kilo-vscode/tests/unit/corporate-command.test.ts
+@@ -0,0 +1,40 @@
++import { afterEach, expect, test } from "bun:test"
++import { createServer } from "node:http"
++import { randomBytes } from "node:crypto"
++import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
++import { tmpdir } from "node:os"
++import { join } from "node:path"
++import { corporateCommand } from "../../src/kilo-provider/corporate-command"
++
++const previous = process.env.CORP_KILO_PROFILE_DIR
++afterEach(() => {
++  if (previous === undefined) delete process.env.CORP_KILO_PROFILE_DIR
++  else process.env.CORP_KILO_PROFILE_DIR = previous
++})
++
++test("uses a live Kilo control when another TUI process left a stale endpoint", async () => {
++  const profile = await mkdtemp(join(tmpdir(), "kilo-corporate-control-"))
++  const directory = join(profile, "corporate-state")
++  const secret = randomBytes(32).toString("base64url")
++  const server = createServer((request, response) => {
++    if (request.headers.authorization !== `Bearer ${secret}`) return response.writeHead(403).end()
++    if (request.url === "/health") return response.writeHead(200).end('{"ok":true}')
++    response.writeHead(200, { "Content-Type": "application/json" }).end('{"message":"live","reload":false}')
++  })
++  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
++  try {
++    await mkdir(directory)
++    await writeFile(join(directory, "control-100.json"), JSON.stringify({ port: 1, secret }), { mode: 0o600 })
++    await writeFile(
++      join(directory, "control-200.json"),
++      JSON.stringify({ port: (server.address() as { port: number }).port, secret }),
++      { mode: 0o600 },
++    )
++    await writeFile(join(directory, "control.json"), JSON.stringify({ port: 1, secret }), { mode: 0o600 })
++    process.env.CORP_KILO_PROFILE_DIR = profile
++    expect((await corporateCommand("corp_status")).message).toBe("live")
++  } finally {
++    await new Promise<void>((resolve) => server.close(() => resolve()))
++    await rm(profile, { recursive: true, force: true })
++  }
++})
 diff --git a/packages/kilo-vscode/tests/unit/use-slash-command.test.ts b/packages/kilo-vscode/tests/unit/use-slash-command.test.ts
 index 1567fbe..b4c8689 100644
 --- a/packages/kilo-vscode/tests/unit/use-slash-command.test.ts

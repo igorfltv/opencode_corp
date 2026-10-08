@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
 import { KiloBridge } from "./kilo-bridge.js";
@@ -86,7 +87,12 @@ async function boot(options, adapters) {
   try {
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     server.unref();
-    await atomicWrite(join(options.stateDir, "control.json"), JSON.stringify({ port: server.address().port, secret }));
+    const state = JSON.stringify({ port: server.address().port, secret });
+    const ownFile = join(options.stateDir, `control-${process.pid}.json`);
+    server.on("close", () => { try { rmSync(ownFile, { force: true }); } catch {} });
+    process.once("exit", () => { try { rmSync(ownFile, { force: true }); } catch {} });
+    await atomicWrite(ownFile, state);
+    await atomicWrite(join(options.stateDir, "control.json"), state);
     return { runtime, server, bridge };
   } catch (error) {
     server.close(); runtime.dispose(); bridge.dispose();
