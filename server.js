@@ -1515,6 +1515,33 @@ async function removeProvider(configPath, client = "opencode") {
   parseConfig(text);
   await atomicWrite(configPath, text);
 }
+async function syncKiloMCP(configPath, stateDir, configs) {
+  let text = await readFile2(configPath, "utf8");
+  const current = parseConfig(text);
+  const existing = object(current.mcp) ? current.mcp : {};
+  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
+  const wanted = new Map(configs.map(({ name, config }) => [name, {
+    type: "remote",
+    url: config.url,
+    oauth: false,
+    headers: { Authorization: `Bearer {file:${join(stateDir, "mcp-tokens", name.slice(5))}}` }
+  }]));
+  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name))))
+    return false;
+  for (const name of managed)
+    if (!wanted.has(name))
+      text = applyEdits(text, modify(text, ["mcp", name], undefined, {}));
+  for (const [name, config] of wanted)
+    text = applyEdits(text, modify(text, ["mcp", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  if (!Object.keys(parseConfig(text).mcp ?? {}).length)
+    text = applyEdits(text, modify(text, ["mcp"], undefined, {}));
+  parseConfig(text);
+  const backup = `${configPath}.before-corporate.bak`;
+  if (!await exists(backup))
+    await atomicWrite(backup, await readFile2(configPath, "utf8"));
+  await atomicWrite(configPath, text);
+  return true;
+}
 
 // src/skills.js
 import { mkdir as mkdir2, readFile as readFile3 } from "fs/promises";
@@ -2247,6 +2274,202 @@ function optionsFromEnv(env = process.env, settings = {}) {
   };
 }
 
+// src/kilo-control.js
+import { createServer as createServer3 } from "http";
+import { timingSafeEqual as timingSafeEqual2 } from "crypto";
+import { join as join5 } from "path";
+
+// src/kilo-bridge.js
+import { createServer as createServer2 } from "http";
+var escape = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+
+class KiloBridge {
+  constructor(toast = () => {}, open2 = openBrowser) {
+    this.toast = toast;
+    this.open = open2;
+    this.forms = new Map;
+  }
+  async form(_sessionID, title, fields) {
+    const id = random();
+    const field = fields.find((item) => item.type === "multiselect");
+    if (!field)
+      return { id };
+    const options = new Map(field.options.map((item) => [item.value, item]));
+    let accept;
+    const result = new Promise((resolve2) => {
+      accept = resolve2;
+    });
+    const server = createServer2(async (request, response) => {
+      const url2 = `http://127.0.0.1:${server.address().port}/form/${id}`;
+      const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
+      if (request.url !== `/form/${id}` || request.headers.host !== `127.0.0.1:${server.address().port}`) {
+        response.writeHead(404, headers).end();
+        return;
+      }
+      if (request.method === "GET") {
+        const choices = field.options.map((item) => `<label><input type="checkbox" name="choice" value="${escape(item.value)}" ${field.default?.includes(item.value) ? "checked" : ""}><span><b>${escape(item.label)}</b><small>${escape(item.description ?? "")}</small></span></label>`).join("");
+        const html = `<!doctype html><html lang="ru"><meta charset="utf-8"><title>${escape(title)}</title><style>body{font:16px system-ui;background:#f7f7f4;color:#222;max-width:620px;margin:6vh auto;padding:24px}h1{font-size:24px}label{display:flex;gap:12px;padding:14px;margin:10px 0;background:white;border:1px solid #ddd;border-radius:10px}small{display:block;color:#666;margin-top:4px}button{background:#222;color:white;border:0;border-radius:8px;padding:12px 20px;cursor:pointer}</style><h1>${escape(title)}</h1><p>${escape(field.description ?? "")}</p><form method="post">${choices}<button>\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C</button></form></html>`;
+        response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(html);
+        return;
+      }
+      if (request.method !== "POST" || request.headers.origin !== new URL(url2).origin || !request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
+        response.writeHead(403, headers).end();
+        return;
+      }
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+        if (body.length > 65536) {
+          response.writeHead(413, headers).end();
+          return;
+        }
+      }
+      const values = new URLSearchParams(body).getAll("choice");
+      if (new Set(values).size !== values.length || values.some((value) => !options.has(value))) {
+        response.writeHead(400, headers).end();
+        return;
+      }
+      response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><html lang=ru><meta charset=utf-8><p>\u0412\u044B\u0431\u043E\u0440 \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</p></html>");
+      accept({ [field.key]: values });
+      server.close();
+    });
+    await new Promise((resolve2, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve2);
+    });
+    const url = `http://127.0.0.1:${server.address().port}/form/${id}`;
+    this.forms.set(id, { server, result, accept });
+    this.open(url).catch(() => this.toast({ title, message: `\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 ${url}`, variant: "info", duration: 15000 }));
+    return { id, url };
+  }
+  async message(_sessionID, title, description) {
+    this.toast({ title, message: description, variant: "info", duration: 1e4 });
+  }
+  wait(_sessionID, id, signal) {
+    const form = this.forms.get(id);
+    if (!form)
+      return signal?.aborted ? Promise.resolve(undefined) : new Promise((resolve2) => signal?.addEventListener("abort", () => resolve2(undefined), { once: true }));
+    if (signal?.aborted)
+      return Promise.resolve(null);
+    return Promise.race([form.result, new Promise((resolve2) => signal?.addEventListener("abort", () => resolve2(null), { once: true }))]);
+  }
+  async cancel(_sessionID, id) {
+    const form = this.forms.get(id);
+    if (!form)
+      return;
+    this.forms.delete(id);
+    form.accept(null);
+    form.server.close();
+  }
+  dispose() {
+    for (const id of this.forms.keys())
+      this.cancel(null, id);
+  }
+}
+
+// src/kilo-control.js
+var key = Symbol.for("company.kilo.corporate.control.v1");
+var commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
+async function startKiloControl(settings = {}, adapters = {}) {
+  const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
+  const registry = globalThis[key] ??= new Map;
+  const name = `${options.configPath}|${options.serverURL}`;
+  if (registry.has(name))
+    return registry.get(name);
+  const ready = boot(options, adapters).catch((error) => {
+    registry.delete(name);
+    throw error;
+  });
+  registry.set(name, ready);
+  return ready;
+}
+async function boot(options, adapters) {
+  let messages = [];
+  const bridge = new KiloBridge(({ title, message }) => messages.push(`${title}: ${message}`), adapters.open);
+  const runtime = new CorporateRuntime(options, {
+    bridge,
+    open: adapters.open,
+    notify: adapters.notify,
+    syncMCP: (configs) => syncKiloMCP(options.configPath, options.stateDir, configs)
+  });
+  await runtime.start();
+  const secret = random();
+  const queue = serial();
+  const execute = (command) => queue(async () => {
+    messages = [];
+    if (command !== "login" && !runtime.authenticated())
+      return { message: "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login.", reload: false };
+    if (command === "login")
+      await runtime.login("kilo-vscode");
+    if (command === "refresh_config") {
+      const state = await runtime.refresh();
+      await bridge.message(null, "\u041A\u043E\u043D\u0444\u0438\u0433 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D", `\u0412\u0435\u0440\u0441\u0438\u044F ${state.revision}. \u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E: ${state.checkedAt}`);
+    }
+    if (command === "skills_load")
+      await runtime.skills("kilo-vscode", async () => {});
+    if (command === "mcps_load")
+      await runtime.mcps("kilo-vscode");
+    if (command === "logout") {
+      await runtime.logout();
+      await bridge.message(null, "\u0412\u044B\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0438 \u043F\u0440\u043E\u0432\u0430\u0439\u0434\u0435\u0440 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
+    }
+    if (command === "corp_status") {
+      const status = runtime.status();
+      await bridge.message(null, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441", `${status.user.name}
+\u041A\u043E\u043D\u0444\u0438\u0433: ${status.config.revision ?? "\u043D\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D"}
+${lights[status.load.level]} ${status.load.message}`);
+    }
+    if (command === "inference_status") {
+      await runtime.pollLoad();
+      await bridge.message(null, `${lights[runtime.load.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441`, runtime.load.message);
+    }
+    const jobs = await Promise.allSettled([...runtime.jobs]);
+    const failure = jobs.find((item) => item.status === "rejected");
+    if (failure)
+      throw failure.reason;
+    return { message: messages.at(-1) ?? "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430.", reload: ["login", "refresh_config", "skills_load", "mcps_load", "logout"].includes(command) };
+  });
+  const server = createServer3(async (request, response) => {
+    const port = server.address().port;
+    const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "application/json; charset=utf-8" };
+    const credential = Buffer.from(request.headers.authorization?.replace(/^Bearer /, "") ?? "");
+    const expected = Buffer.from(secret);
+    if (request.headers.host !== `127.0.0.1:${port}` || request.headers.origin || credential.length !== expected.length || !timingSafeEqual2(credential, expected)) {
+      response.writeHead(403, headers).end(JSON.stringify({ error: "Forbidden" }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, headers).end(JSON.stringify({ ok: true }));
+      return;
+    }
+    const command = request.url?.match(/^\/command\/([a-z_]+)$/)?.[1];
+    if (request.method !== "POST" || !commands.has(command)) {
+      response.writeHead(404, headers).end(JSON.stringify({ error: "Unknown command" }));
+      return;
+    }
+    try {
+      const result = await execute(command);
+      response.writeHead(200, headers).end(JSON.stringify(result));
+    } catch (error) {
+      response.writeHead(500, headers).end(JSON.stringify({ error: error.message ?? "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430" }));
+    }
+  });
+  try {
+    await new Promise((resolve2, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve2);
+    });
+    server.unref();
+    await atomicWrite(join5(options.stateDir, "control.json"), JSON.stringify({ port: server.address().port, secret }));
+    return { runtime, server, bridge };
+  } catch (error) {
+    server.close();
+    runtime.dispose();
+    bridge.dispose();
+    throw error;
+  }
+}
+
 // src/plugin.js
 var rpc = {
   id: "company.corporate",
@@ -2256,18 +2479,19 @@ var rpc = {
 var registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
 var plugin_default = {
   id: "company-corporate",
-  async server() {
+  async server(_context, settings) {
+    await startKiloControl(settings);
     return {};
   },
   async setup(context) {
     const options = optionsFromEnv(process.env, context.options);
     const registry = globalThis[registryKey] ??= new Map;
-    const key = `${options.configPath}|${options.serverURL}`;
-    let entry = registry.get(key);
+    const key2 = `${options.configPath}|${options.serverURL}`;
+    let entry = registry.get(key2);
     if (!entry) {
       const runtime2 = new CorporateRuntime(options);
       entry = { runtime: runtime2, ready: runtime2.start(), refs: 0 };
-      registry.set(key, entry);
+      registry.set(key2, entry);
     }
     entry.refs++;
     await entry.ready;
@@ -2312,9 +2536,9 @@ ${status.config.lastError}` : ""}`);
         await runtime.bridge.message(id, `${lights[runtime.load.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441`, runtime.load.message);
       }]
     ];
-    await context.command.transform((commands) => {
+    await context.command.transform((commands2) => {
       for (const [name, description, execute] of definitions)
-        commands.add({ name, description, async execute({ sessionID }) {
+        commands2.add({ name, description, async execute({ sessionID }) {
           try {
             if (name !== "login" && !runtime.authenticated()) {
               await runtime.bridge.message(sessionID, `/${name}`, "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login, \u0447\u0442\u043E\u0431\u044B \u0432\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode.");
@@ -2332,7 +2556,7 @@ ${status.config.lastError}` : ""}`);
       runtime.listeners.delete(listener);
       if (--entry.refs === 0) {
         runtime.dispose();
-        registry.delete(key);
+        registry.delete(key2);
       }
     };
   }

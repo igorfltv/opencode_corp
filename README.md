@@ -72,22 +72,21 @@ bun run bundle
 bun run server
 ```
 
-В `~/.config/kilo/kilo.jsonc` добавьте **абсолютный путь** к этому каталогу в
-массив `plugin` (сохраните остальные записи файла):
+В `~/.config/kilo/kilo.jsonc` добавьте ссылку на GitHub в массив `plugin`:
 
 ```jsonc
 {
   "$schema": "https://app.kilo.ai/config.json",
-  "plugin": ["/absolute/path/to/opencode_corp"]
+  "plugin": ["git:github.com/igorfltv/opencode_corp@main"]
 }
 ```
 
-В `~/.config/kilo/tui.jsonc` добавьте тот же путь: Kilo 7.8.8 загружает TUI
+В `~/.config/kilo/tui.jsonc` добавьте ту же ссылку: Kilo 7.8.8 загружает TUI
 плагины из отдельного TUI конфига.
 
 ```jsonc
 {
-  "plugin": ["/absolute/path/to/opencode_corp"]
+  "plugin": ["git:github.com/igorfltv/opencode_corp@main"]
 }
 ```
 
@@ -108,8 +107,23 @@ Kilo использует `provider.corporate` и `mcp.corp_*` в `kilo.jsonc`.
 Секреты лежат в `corporate-state/` с правами `0600`; JSONC содержит только
 ссылки `{file:...}`. При выходе корпоративные записи и токены удаляются.
 Профиль можно задать через `CORP_KILO_PROFILE_DIR` или `KILO_CONFIG_DIR`, адрес
-сервера — через `CORP_SERVER_URL`. Поддержка slash-команд в этой версии относится
-к Kilo CLI/TUI; расширение Kilo для VS Code не загружает TUI entrypoint.
+сервера — через `CORP_SERVER_URL`.
+
+### Команды в чате Kilo для VS Code
+
+Расширение Kilo 7.8.8 загружает серверный плагин из `kilo.jsonc`, но не запускает
+его TUI entrypoint. Чтобы семь корпоративных slash-команд выполнялись прямо в
+чате без модели, нужна сборка расширения с патчем
+[`patches/kilo-vscode-7.8.8.patch`](patches/kilo-vscode-7.8.8.patch).
+Патч добавляет команды в чат Kilo и вызывает серверный плагин через защищённый
+локальный канал. При входе и обновлении конфигурации расширение перезагружает
+Kilo backend, поэтому корпоративные модели и MCP появляются сразу.
+
+Патч применяется к исходникам Kilo `v7.8.8` командой
+`git apply /абсолютный/путь/opencode_corp/patches/kilo-vscode-7.8.8.patch`
+из корня исходников Kilo. Затем соберите VSIX по инструкциям исходников Kilo и
+установите его через `code --install-extension <файл.vsix> --force`. После
+обновления расширения из Marketplace патч потребуется установить заново.
 
 ## Проверка в своём OpenCode
 

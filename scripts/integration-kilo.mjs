@@ -8,6 +8,7 @@ import { createEmulator } from "../server/emulator.js";
 import { startLogin } from "../src/login.js";
 import { CorporateAPI } from "../src/api.js";
 import { applyConfig, syncKiloMCP } from "../src/config.js";
+import { saveMCPSelection, validateMCPCatalog } from "../src/mcp.js";
 import { atomicWrite, random } from "../src/io.js";
 import { installSkills } from "../src/skills.js";
 import { approveBrowser } from "../tests/helpers.js";
@@ -28,9 +29,12 @@ try {
   assert.equal((await fetch(await approveBrowser(flow.url))).status, 200);
   const login = await flow.result;
   await atomicWrite(join(stateDir, "access-token"), login.accessToken);
+  await atomicWrite(join(stateDir, "credential.json"), JSON.stringify({ accessToken: login.accessToken, expiresAt: login.expiresAt, user: login.user }));
   await applyConfig({ configPath, stateDir, serverURL: emulator.baseURL, envelope: login.configuration, client: "kilo" });
-  await atomicWrite(join(stateDir, "mcp-tokens", "jira"), "demo-jira-token");
-  await syncKiloMCP(configPath, stateDir, [{ name: "corp_jira", config: { url: `${emulator.baseURL}/mcp/jira` } }]);
+  const api = new CorporateAPI(emulator.baseURL);
+  const catalog = validateMCPCatalog((await api.request("/api/mcps", { token: login.accessToken })).data, emulator.baseURL);
+  const selection = await saveMCPSelection(stateDir, ["jira"], catalog, new Map([["jira", "demo-jira-token"]]));
+  await syncKiloMCP(configPath, stateDir, selection);
   const password = random();
   child = spawn(process.env.KILO_BIN ?? "kilo", ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     cwd: project, stdio: ["ignore", "pipe", "pipe"], env: {
@@ -38,6 +42,7 @@ try {
       XDG_CONFIG_HOME: join(directory, "config"), XDG_DATA_HOME: join(directory, "data"),
       XDG_CACHE_HOME: join(directory, "cache"), XDG_STATE_HOME: join(directory, "state"),
       CORP_NO_BROWSER: "1", CORP_NO_NOTIFICATIONS: "1",
+      CORP_SERVER_URL: emulator.baseURL,
     },
   });
   const url = await new Promise((resolveURL, reject) => {
@@ -69,6 +74,10 @@ try {
   assert.deepEqual(await request("/config/warnings"), []);
   const providers = await request("/provider");
   assert(providers.all.some((item) => item.id === "corporate"));
+  const control = JSON.parse(await Bun.file(join(stateDir, "control.json")).text());
+  const status = await fetch(`http://127.0.0.1:${control.port}/command/corp_status`, { method: "POST", headers: { Authorization: `Bearer ${control.secret}` } });
+  assert.equal(status.status, 200);
+  assert((await status.json()).message.includes("Engineering"));
   console.log("Kilo provider and MCP loaded; checking live reload");
   const eventually = async (predicate, failure) => {
     const end = Date.now() + 15000;
@@ -85,9 +94,8 @@ try {
   await request("/instance/reload", "POST");
   await eventually(async () => (await request("/config")).provider?.corporate?.models?.["demo-code"]?.name === "Company Code V2", "Kilo did not reload the changed provider config");
   await request("/skill");
-  const api = new CorporateAPI(emulator.baseURL);
-  const catalog = (await api.request("/api/skills", { token: login.accessToken })).data.skills;
-  await installSkills({ ids: ["corp-code-review"], catalog, api, token: login.accessToken, skillsDir: join(profile, "skills") });
+  const skills = (await api.request("/api/skills", { token: login.accessToken })).data.skills;
+  await installSkills({ ids: ["corp-code-review"], catalog: skills, api, token: login.accessToken, skillsDir: join(profile, "skills") });
   await request("/instance/reload", "POST");
   await eventually(async () => (await request("/skill")).some((item) => item.name === "corp-code-review"), "Kilo did not discover the installed skill");
   console.log("PASS installed Kilo CLI loads the plugin, corporate provider and MCP configuration");

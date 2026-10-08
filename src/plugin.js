@@ -1,4 +1,5 @@
 import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
+import { startKiloControl } from "./kilo-control.js";
 
 const rpc = {
   id: "company.corporate",
@@ -9,9 +10,9 @@ const rpc = {
 const registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
 export default {
   id: "company-corporate",
-  // Kilo loads the same package's server entrypoint while its TUI entrypoint
-  // owns the interactive runtime. OpenCode continues to use setup() below.
-  async server() { return {}; },
+  // Kilo's VS Code client calls the loopback control bridge; OpenCode keeps
+  // its existing setup() entrypoint below.
+  async server(_context, settings) { await startKiloControl(settings); return {}; },
   async setup(context) {
     const options = optionsFromEnv(process.env, context.options);
     const registry = globalThis[registryKey] ??= new Map();

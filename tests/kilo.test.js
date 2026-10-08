@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { createEmulator } from "../server/emulator.js";
 import { CorporateRuntime, optionsFromEnv } from "../src/runtime.js";
 import { KiloBridge } from "../src/kilo-bridge.js";
+import { startKiloControl } from "../src/kilo-control.js";
 import { parseConfig, syncKiloMCP } from "../src/config.js";
 import { atomicWrite } from "../src/io.js";
 import { approveBrowser } from "./helpers.js";
@@ -82,4 +83,40 @@ test("Kilo TUI registers seven direct slash commands and requires login", async 
     await commands.find((item) => item.slash.name === "corp_status").onSelect();
     expect(toasts.at(-1).message).toContain("Сначала выполните /login");
   } finally { dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("Kilo VS Code control executes login and status through an authenticated loopback bridge", async () => {
+  const root = await mkdtemp(join(tmpdir(), "corporate-kilo-control-"));
+  const emulator = createEmulator({ port: 0 });
+  const pages = [];
+  let control;
+  try {
+    await atomicWrite(join(root, "kilo.jsonc"), '{"plugin":["git:github.com/igorfltv/opencode_corp@main"]}');
+    control = await startKiloControl({ profileDir: root, serverURL: emulator.baseURL, refreshMs: 3600000 }, {
+      open: async (url) => pages.push(url), notify: async () => {},
+    });
+    const endpoint = `http://127.0.0.1:${control.server.address().port}`;
+    const state = JSON.parse(await readFile(join(root, "corporate-state/control.json"), "utf8"));
+    expect(state.port).toBe(control.server.address().port);
+    const request = (command, token = state.secret) => fetch(`${endpoint}/command/${command}`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}` },
+    });
+    expect((await fetch(`${endpoint}/health`, { headers: { Authorization: `Bearer ${state.secret}` } })).status).toBe(200);
+    expect((await request("corp_status", "wrong")).status).toBe(403);
+    expect((await (await request("corp_status")).json()).message).toContain("Сначала выполните /login");
+    const login = request("login");
+    const page = await eventually(() => pages.find((url) => url.includes("/oauth/authorize")));
+    expect((await fetch(await approveBrowser(page))).status).toBe(200);
+    const result = await (await login).json();
+    expect(result.reload).toBe(true);
+    expect(result.message).toContain("Вход выполнен");
+    expect((await (await request("corp_status")).json()).message).toContain("Engineering");
+    expect((await (await request("logout")).json()).reload).toBe(true);
+    expect((await (await request("corp_status")).json()).message).toContain("Сначала выполните /login");
+  } finally {
+    control?.runtime.dispose(); control?.bridge.dispose();
+    control?.server.closeAllConnections();
+    if (control) await new Promise((done) => control.server.close(done));
+    emulator.stop(); await rm(root, { recursive: true, force: true });
+  }
 });

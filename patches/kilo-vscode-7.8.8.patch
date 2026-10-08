@@ -1,0 +1,258 @@
+diff --git a/packages/kilo-vscode/src/KiloProvider.ts b/packages/kilo-vscode/src/KiloProvider.ts
+index 2fd84d0..7fa4102 100644
+--- a/packages/kilo-vscode/src/KiloProvider.ts
++++ b/packages/kilo-vscode/src/KiloProvider.ts
+@@ -79,6 +79,7 @@ import { disposeGitChangesTarget } from "./kilo-provider/git-changes-target"
+ import { interceptMessage } from "./kilo-provider/git-changes-request"
+ import { matchFollowup, recordFollowup, type Followup } from "./kilo-provider/followup-session"
+ import { clearCommandsCache, loadCommands } from "./kilo-provider/commands"
++import { corporateAvailable, corporateCommand } from "./kilo-provider/corporate-command"
+ import { fetchMessagePage, MESSAGE_PAGE_LIMIT } from "./kilo-provider/message-page"
+ import { createSessionPageState, fetchSessionPage } from "./kilo-provider/session-page"
+ import { editPaths } from "./kilo-provider/session-edits"
+@@ -1297,6 +1298,7 @@ export class KiloProvider implements vscode.WebviewViewProvider, TelemetryProper
+       }
+       if (this.handleEditorOpenMessage(message)) return
+       if (await this.handleMcpMessage(message)) return
++      if (await this.handleCorporateMessage(message)) return
+       if (await this.handleAgentManagerSettingsMessage(message)) return
+       if (await this.handleAutoCleanupMessage(message)) return
+       if (
+@@ -1757,6 +1759,25 @@ export class KiloProvider implements vscode.WebviewViewProvider, TelemetryProper
+     this.webviewMessageDisposable = watchWorkStyleConfig((msg) => this.postMessage(msg), this.webviewMessageDisposable)
+   }
+ 
++  private async handleCorporateMessage(message: TypedWebviewMessage & { command?: unknown }): Promise<boolean> {
++    if (message.type !== "corporateCommand") return false
++    const name = typeof message.command === "string" ? message.command : ""
++    try {
++      if (!this.client) throw new Error("Kilo backend ещё не подключён")
++      await this.client.config.get()
++      const result = await corporateCommand(name)
++      if (result.reload) {
++        const reload = await this.client.instance.reload()
++        if (reload.error) throw new Error("Kilo не смог обновить конфигурацию после команды")
++      }
++      this.postMessage({ type: "corporateCommandResult", command: name, message: result.message })
++    } catch (err) {
++      const detail = err instanceof Error ? err.message : "Корпоративная команда не выполнена"
++      this.postMessage({ type: "corporateCommandResult", command: name, message: detail, error: true })
++    }
++    return true
++  }
++
+   private async sendWebviewMessage(message: SendWebviewMessage): Promise<void> {
+     const feedback = feedbackMessage(message)
+     await this.handleSendMessage(
+@@ -3063,9 +3084,10 @@ export class KiloProvider implements vscode.WebviewViewProvider, TelemetryProper
+     try {
+       const dir = this.getWorkspaceDirectory()
+       const message = await loadCommands(this.client, dir)
++      const output = { ...(message as object), corporate: await corporateAvailable() }
+ 
+-      this.cachedCommandsMessage = message
+-      this.postMessage(message)
++      this.cachedCommandsMessage = output
++      this.postMessage(output)
+     } catch (error) {
+       console.error("[Kilo New] KiloProvider: Failed to fetch commands:", error)
+     }
+diff --git a/packages/kilo-vscode/src/kilo-provider/corporate-command.ts b/packages/kilo-vscode/src/kilo-provider/corporate-command.ts
+new file mode 100644
+index 0000000..9169065
+--- /dev/null
++++ b/packages/kilo-vscode/src/kilo-provider/corporate-command.ts
+@@ -0,0 +1,68 @@
++import { readFile, stat } from "node:fs/promises"
++import { homedir } from "node:os"
++import { join, resolve } from "node:path"
++
++const names = new Set([
++  "login",
++  "refresh_config",
++  "skills_load",
++  "mcps_load",
++  "logout",
++  "corp_status",
++  "inference_status",
++])
++
++async function control() {
++  const dir = resolve(
++    process.env.CORP_KILO_PROFILE_DIR ??
++      process.env.CORP_PROFILE_DIR ??
++      process.env.KILO_CONFIG_DIR ??
++      join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "kilo"),
++  )
++  const file = join(dir, "corporate-state", "control.json")
++  const info = await stat(file)
++  if (info.mode & 0o077) throw new Error("Небезопасные права доступа к корпоративному control.json")
++  const control: unknown = JSON.parse(await readFile(file, "utf8"))
++  if (!control || typeof control !== "object") throw new Error("Некорректный корпоративный control.json")
++  const { port, secret } = control as { port?: unknown; secret?: unknown }
++  if (
++    !Number.isInteger(port) ||
++    Number(port) < 1 ||
++    Number(port) > 65535 ||
++    typeof secret !== "string" ||
++    !/^[A-Za-z0-9_-]{43}$/.test(secret)
++  ) {
++    throw new Error("Некорректный корпоративный control.json")
++  }
++  return { port: Number(port), secret }
++}
++
++export async function corporateAvailable(): Promise<boolean> {
++  try {
++    const state = await control()
++    const response = await fetch(`http://127.0.0.1:${state.port}/health`, {
++      headers: { Authorization: `Bearer ${state.secret}` },
++      signal: AbortSignal.timeout(2000),
++    })
++    return response.ok
++  } catch {
++    return false
++  }
++}
++
++export async function corporateCommand(name: string): Promise<{ message: string; reload: boolean }> {
++  if (!names.has(name)) throw new Error("Неизвестная корпоративная команда")
++  const state = await control()
++  const response = await fetch(`http://127.0.0.1:${state.port}/command/${name}`, {
++    method: "POST",
++    headers: { Authorization: `Bearer ${state.secret}` },
++    signal: AbortSignal.timeout(310000),
++  })
++  const result: unknown = await response.json()
++  if (!result || typeof result !== "object") throw new Error("Некорректный ответ корпоративного плагина")
++  const data = result as { message?: unknown; reload?: unknown; error?: unknown }
++  if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : "Корпоративная команда не выполнена")
++  if (typeof data.message !== "string" || typeof data.reload !== "boolean")
++    throw new Error("Некорректный ответ корпоративного плагина")
++  return { message: data.message, reload: data.reload }
++}
+diff --git a/packages/kilo-vscode/tests/unit/use-slash-command.test.ts b/packages/kilo-vscode/tests/unit/use-slash-command.test.ts
+index 1567fbe..2bc9249 100644
+--- a/packages/kilo-vscode/tests/unit/use-slash-command.test.ts
++++ b/packages/kilo-vscode/tests/unit/use-slash-command.test.ts
+@@ -130,6 +130,19 @@ describe("worktree update slash action", () => {
+ })
+ 
+ describe("useSlashCommand sandbox action", () => {
++  it("dispatches corporate chat commands locally without sending a model command", () => {
++    const ctx = setup(() => {})
++    ctx.fire({ type: "commandsLoaded", commands: [], corporate: true })
++    const names = ["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]
++    for (const name of names) {
++      const command = ctx.slash.commands().find((item) => item.name === name)
++      expect(command?.action).toBeDefined()
++      command?.action?.()
++    }
++    expect(ctx.sent).toEqual(names.map((command) => ({ type: "corporateCommand", command })))
++    ctx.dispose()
++  })
++
+   it("supports the singular model alias", () => {
+     const ctx = setup(() => {})
+ 
+diff --git a/packages/kilo-vscode/webview-ui/src/components/chat/PromptInput.tsx b/packages/kilo-vscode/webview-ui/src/components/chat/PromptInput.tsx
+index e34b73e..750949d 100644
+--- a/packages/kilo-vscode/webview-ui/src/components/chat/PromptInput.tsx
++++ b/packages/kilo-vscode/webview-ui/src/components/chat/PromptInput.tsx
+@@ -1222,6 +1222,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
+   const unsubscribe = vscode.onMessage((message) => {
+     if (handleSandboxMessage(message)) return
+ 
++    if (message.type === "corporateCommandResult") {
++      showToast({
++        variant: message.error ? "error" : "success",
++        title: `/${message.command}`,
++        description: message.message,
++      })
++    }
++
+     if (message.type === "setChatBoxMessage") {
+       restoreBox(message)
+     }
+diff --git a/packages/kilo-vscode/webview-ui/src/hooks/useSlashCommand.ts b/packages/kilo-vscode/webview-ui/src/hooks/useSlashCommand.ts
+index 3a327be..fc760f6 100644
+--- a/packages/kilo-vscode/webview-ui/src/hooks/useSlashCommand.ts
++++ b/packages/kilo-vscode/webview-ui/src/hooks/useSlashCommand.ts
+@@ -80,6 +80,7 @@ export function useSlashCommand(
+   extra?: SlashCommandEntry[],
+ ): SlashCommand {
+   const [server, setServer] = createSignal<SlashCommandInfo[]>([])
++  const [enabled, setEnabled] = createSignal(false)
+   const [query, setQuery] = createSignal<string | null>(null)
+   const [index, setIndex] = createSignal(0)
+   const [requested, setRequested] = createSignal(false)
+@@ -224,6 +225,20 @@ export function useSlashCommand(
+       },
+     },
+   ]
++  const corporate: SlashCommandEntry[] = [
++    ["login", "Войти в корпоративный сервис"],
++    ["refresh_config", "Обновить корпоративный конфиг"],
++    ["skills_load", "Загрузить корпоративные skills"],
++    ["mcps_load", "Подключить корпоративные MCP"],
++    ["logout", "Выйти из корпоративной учётной записи"],
++    ["corp_status", "Показать корпоративный статус"],
++    ["inference_status", "Показать нагрузку инференса"],
++  ].map(([name, description]) => ({
++    name,
++    description,
++    hints: [],
++    action: () => vscode.postMessage({ type: "corporateCommand", command: name }),
++  }))
+   all.push(...(extra ?? []))
+ 
+   const excluded = () => {
+@@ -239,7 +254,7 @@ export function useSlashCommand(
+   const client = () => {
+     const set = excluded()
+     const only = included()
+-    return all.filter((c) => !set?.has(c.name) && (!only || only.has(c.name)))
++    return [...all, ...(enabled() ? corporate : [])].filter((c) => !set?.has(c.name) && (!only || only.has(c.name)))
+   }
+ 
+   const commands = (): SlashCommandEntry[] => {
+@@ -310,6 +325,7 @@ export function useSlashCommand(
+   const unsubscribe = vscode.onMessage((message) => {
+     if (message.type !== "commandsLoaded") return
+     setServer(message.commands)
++    setEnabled(message.corporate === true)
+   })
+ 
+   onCleanup(() => {
+diff --git a/packages/kilo-vscode/webview-ui/src/types/messages/extension-messages.ts b/packages/kilo-vscode/webview-ui/src/types/messages/extension-messages.ts
+index a5191ec..650483c 100644
+--- a/packages/kilo-vscode/webview-ui/src/types/messages/extension-messages.ts
++++ b/packages/kilo-vscode/webview-ui/src/types/messages/extension-messages.ts
+@@ -573,6 +573,7 @@ export interface SkillsLoadedMessage {
+ export interface CommandsLoadedMessage {
+   type: "commandsLoaded"
+   commands: SlashCommandInfo[]
++  corporate?: boolean
+ }
+ 
+ export interface AutocompleteSettingsLoadedMessage {
+@@ -1769,6 +1770,7 @@ export interface AgentManagerBrowserDevtoolsMessage {
+ }
+ 
+ export type ExtensionMessage =
++  | { type: "corporateCommandResult"; command: string; message: string; error?: boolean }
+   | {
+       type: "agentManager.resolveCommentResult" | "agentManager.unresolveCommentResult"
+       projectId?: string
+diff --git a/packages/kilo-vscode/webview-ui/src/types/messages/webview-messages.ts b/packages/kilo-vscode/webview-ui/src/types/messages/webview-messages.ts
+index 9c69805..60fcce3 100644
+--- a/packages/kilo-vscode/webview-ui/src/types/messages/webview-messages.ts
++++ b/packages/kilo-vscode/webview-ui/src/types/messages/webview-messages.ts
+@@ -1731,6 +1731,7 @@ export interface DismissAgentMigrationBannerMessage {
+ }
+ 
+ export type WebviewMessage =
++  | { type: "corporateCommand"; command: string }
+   | import("./agent-manager").BaseUpdateRequest
+   | PRMergeRequest
+   | { type: "sessionActivity"; state: Activity }
