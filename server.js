@@ -2484,6 +2484,100 @@ ${lights[status.load.level]} ${status.load.message}`);
   }
 }
 
+// src/kilo-workflows.js
+import { readFile as readFile5 } from "fs/promises";
+import { dirname as dirname2, join as join6 } from "path";
+var marker = "# opencode_corp managed Kilo workflow";
+var legacyMarker = "<!-- opencode_corp managed Kilo workflow -->";
+var descriptions = {
+  login: "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0438\u0441",
+  refresh_config: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433",
+  skills_load: "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills",
+  mcps_load: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP",
+  logout: "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0441\u0435\u0440\u0432\u0438\u0441\u0430",
+  corp_status: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441",
+  inference_status: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0443 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441\u0430"
+};
+var helper = String.raw`import { readFile, readdir, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const names = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
+const name = process.argv[2];
+if (!names.has(name)) throw new Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430");
+const directory = dirname(fileURLToPath(import.meta.url));
+const files = (await readdir(directory)).filter((file) => /^control-\d+\.json$/.test(file));
+files.sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
+files.push("control.json");
+
+async function active(file) {
+  try {
+    const path = join(directory, file);
+    if ((await stat(path)).mode & 0o077) return;
+    const state = JSON.parse(await readFile(path, "utf8"));
+    if (!Number.isInteger(state.port) || state.port < 1 || state.port > 65535 ||
+      typeof state.secret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(state.secret)) return;
+    const response = await fetch("http://127.0.0.1:" + state.port + "/health", {
+      headers: { Authorization: "Bearer " + state.secret }, signal: AbortSignal.timeout(1000),
+    });
+    if (response.ok) return state;
+  } catch {}
+}
+
+let control;
+for (const file of files) {
+  control = await active(file);
+  if (control) break;
+}
+if (!control) throw new Error("\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D Kilo \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D");
+const response = await fetch("http://127.0.0.1:" + control.port + "/command/" + name, {
+  method: "POST", headers: { Authorization: "Bearer " + control.secret },
+  signal: AbortSignal.timeout(310000),
+});
+const result = await response.json();
+if (!response.ok) throw new Error(result.error || "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430");
+if (typeof result.message !== "string") throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 \u043F\u043B\u0430\u0433\u0438\u043D\u0430");
+console.log(result.message);
+`;
+function quote(path) {
+  if (/[\r\n`]/.test(path))
+    throw new Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u043F\u0443\u0442\u044C \u043A \u043A\u043E\u043D\u0444\u0438\u0433\u0443 Kilo");
+  return `'${path.replaceAll("'", `'"'"'`)}'`;
+}
+async function installKiloWorkflows(options) {
+  const script = join6(options.stateDir, "workflow-command.mjs");
+  await atomicWrite(script, helper);
+  const conflicts = [];
+  for (const [name, description] of Object.entries(descriptions)) {
+    const file = join6(dirname2(options.configPath), "commands", `${name}.md`);
+    const current = await exists(file);
+    if (current) {
+      if (current.isSymbolicLink()) {
+        conflicts.push(name);
+        continue;
+      }
+      const content2 = await readFile5(file, "utf8");
+      if (!content2.includes(marker) && !content2.includes(legacyMarker)) {
+        conflicts.push(name);
+        continue;
+      }
+    }
+    const content = `---
+${marker}
+description: ${description}
+---
+
+\u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430 /${name} \u0432\u0435\u0440\u043D\u0443\u043B\u0430 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442:
+
+!\`node ${quote(script)} ${name}\`
+
+\u041E\u0442\u0432\u0435\u0442\u044C \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044E \u043A\u0440\u0430\u0442\u043A\u043E \u043F\u043E-\u0440\u0443\u0441\u0441\u043A\u0438, \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043A\u043E\u043C\u0430\u043D\u0434\u044B \u0432\u044B\u0448\u0435.
+`;
+    await atomicWrite(file, content);
+  }
+  return { conflicts };
+}
+
 // src/plugin.js
 var rpc = {
   id: "company.corporate",
@@ -2495,6 +2589,10 @@ var plugin_default = {
   id: "company-corporate",
   async server(_context, settings) {
     await startKiloControl(settings);
+    const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
+    const { conflicts } = await installKiloWorkflows(options);
+    if (conflicts.length)
+      console.warn(`\u0421\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0435 Kilo workflows \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B: ${conflicts.join(", ")}`);
     return {};
   },
   async setup(context) {

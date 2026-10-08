@@ -1,5 +1,6 @@
 import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
 import { startKiloControl } from "./kilo-control.js";
+import { installKiloWorkflows } from "./kilo-workflows.js";
 
 const rpc = {
   id: "company.corporate",
@@ -10,9 +11,15 @@ const rpc = {
 const registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
 export default {
   id: "company-corporate",
-  // Kilo's VS Code client calls the loopback control bridge; OpenCode keeps
-  // its existing setup() entrypoint below.
-  async server(_context, settings) { await startKiloControl(settings); return {}; },
+  // Official Kilo clients load the same server plugin. The TUI has direct
+  // commands; VS Code discovers the generated workflow files.
+  async server(_context, settings) {
+    await startKiloControl(settings);
+    const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
+    const { conflicts } = await installKiloWorkflows(options);
+    if (conflicts.length) console.warn(`Существующие Kilo workflows сохранены: ${conflicts.join(", ")}`);
+    return {};
+  },
   async setup(context) {
     const options = optionsFromEnv(process.env, context.options);
     const registry = globalThis[registryKey] ??= new Map();
