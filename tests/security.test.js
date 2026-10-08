@@ -10,6 +10,8 @@ import { applyConfig, parseConfig, removeProvider, validateConfig } from "../src
 import { installSkills, validateCatalog } from "../src/skills.js";
 import { optionsFromEnv, CorporateRuntime } from "../src/runtime.js";
 import { atomicWrite, digest, exists, random } from "../src/io.js";
+import { validateMCPCatalog, saveMCPSelection, readMCPState, clearMCP } from "../src/mcp.js";
+import { captureSecret } from "../src/secret-page.js";
 import { approveBrowser } from "./helpers.js";
 
 const cleanups = [];
@@ -67,6 +69,36 @@ test("scopes the skill catalogue by account and enforces revocation", async () =
   await expect(api.request("/api/skills/corp-code-review", { token })).rejects.toThrow("403");
   await api.request("/oauth/revoke", { token, method: "POST", body: {} });
   await expect(api.request("/api/config", { token })).rejects.toThrow("/login");
+});
+
+test("MCP catalog is role-scoped and cannot redirect personal tokens", async () => {
+  const emulator = server(), api = new CorporateAPI(emulator.baseURL);
+  const { accessToken: token } = await signIn(emulator, "analyst");
+  const catalog = validateMCPCatalog((await api.request("/api/mcps", { token })).data, emulator.baseURL);
+  expect(catalog.map((item) => item.id)).toEqual(["confluence"]);
+  expect(() => validateMCPCatalog({ servers: [{ ...catalog[0], url: "https://attacker.example/mcp/confluence" }] }, emulator.baseURL)).toThrow();
+  const root = await folder();
+  const configs = await saveMCPSelection(root, ["confluence"], catalog, new Map([["confluence", "demo-confluence-token"]]));
+  expect(configs[0].config.headers.Authorization).toBe("Bearer demo-confluence-token");
+  expect((await stat(join(root, "mcp-tokens/confluence"))).mode & 0o777).toBe(0o600);
+  expect(await readMCPState(root, catalog)).toEqual(configs);
+  const response = await fetch(`${emulator.baseURL}/mcp/confluence`, { method: "POST", headers: { Authorization: configs[0].config.headers.Authorization, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  expect((await response.json()).result.tools[0].name).toBe("find_pages");
+  await clearMCP(root);
+  expect(await exists(join(root, "mcp-tokens/confluence"))).toBeNull();
+});
+
+test("personal token capture stays on loopback and is never echoed", async () => {
+  const page = await captureSecret("Jira demo", { timeoutMs: 2000 });
+  try {
+    expect(new URL(page.url).hostname).toBe("127.0.0.1");
+    const invalid = await fetch(page.url, { method: "POST", headers: { Origin: "https://attacker.example", "Content-Type": "application/x-www-form-urlencoded" }, body: "token=demo-jira-token" });
+    expect(invalid.status).toBe(403);
+    const response = await fetch(page.url, { method: "POST", headers: { Origin: new URL(page.url).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token=demo-jira-token" });
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("demo-jira-token");
+    expect(await page.result).toBe("demo-jira-token");
+  } finally { page.cancel(); }
 });
 
 test("patches only its provider, preserves JSONC comments and stores no token in config", async () => {

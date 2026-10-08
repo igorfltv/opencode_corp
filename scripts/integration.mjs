@@ -11,10 +11,10 @@ let demo;
 try {
   demo = await launch({ directory, refreshMs: 750, loadPollMs: 300, quiet: true });
   const commandNames = (await demo.request("/api/command")).data.map((command) => command.name);
-  for (const name of ["login", "refresh_config", "skills_load", "logout", "corp_status", "inference_status"]) assert(commandNames.includes(name));
+  for (const name of ["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]) assert(commandNames.includes(name));
   const plugin = (await demo.request("/api/plugin")).data.find((plugin) => plugin.id === "company-corporate");
   assert.equal(plugin.state.status, "active");
-  console.log("PASS native plugin and six slash commands registered");
+  console.log("PASS native plugin and seven slash commands registered");
   const findForm = (title) => eventually(async () => (await demo.forms()).find((form) => form.title.includes(title)));
   const dismiss = async () => { for (const form of await demo.forms()) await demo.request(`/api/session/${demo.session.id}/form/${form.id}`, { method: "DELETE" }); };
   const admin = (body) => fetch(`${demo.emulator.baseURL}/admin/state`, { method: "POST", headers: { "Content-Type": "application/json", "x-demo-admin": demo.emulator.adminToken }, body: JSON.stringify(body) });
@@ -22,7 +22,7 @@ try {
   assert.deepEqual(Object.keys(parseConfig(beforeLoginConfig)).sort(), ["model", "plugins", "share"].sort());
   assert(!parseConfig(beforeLoginConfig).providers);
   const beforeLoginAudit = demo.emulator.state.audit.length;
-  for (const name of ["refresh_config", "skills_load", "inference_status", "corp_status", "logout"]) {
+  for (const name of ["refresh_config", "skills_load", "mcps_load", "inference_status", "corp_status", "logout"]) {
     await demo.command(name);
     const form = await findForm(`/${name}`);
     assert(form.fields[0].description.includes("Сначала выполните /login"), `${name} did not require login`);
@@ -67,6 +67,20 @@ try {
   assert((await readFile(join(demo.profile, "skills/corp-code-review/SKILL.md"), "utf8")).includes("name: corp-code-review"));
   await eventually(async () => (await demo.request("/api/skill")).data?.some((skill) => skill.name === "corp-code-review"));
   console.log("PASS native multiselect form, authenticated skill installation and live discovery");
+  await dismiss(); await demo.command("mcps_load");
+  const mcpForm = await findForm("Подключить корпоративные MCP");
+  assert.equal(mcpForm.fields[0].type, "multiselect");
+  assert.equal(mcpForm.fields[0].options.length, 2);
+  await demo.request(`/api/session/${demo.session.id}/form/${mcpForm.id}/reply`, { method: "POST", body: { answer: { mcps: ["jira"] } } });
+  const tokenForm = await findForm("Токен Jira");
+  const tokenURL = tokenForm.fields[0].url;
+  const tokenResponse = await fetch(tokenURL, { method: "POST", headers: { Origin: new URL(tokenURL).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token=demo-jira-token" });
+  assert.equal(tokenResponse.status, 200);
+  await findForm("MCP настроены");
+  assert(!JSON.stringify(await demo.request("/api/config")).includes("demo-jira-token"));
+  assert(!(await readFile(demo.configPath, "utf8")).includes("demo-jira-token"));
+  await eventually(async () => (await demo.request("/api/mcp")).data?.some((entry) => entry.name === "corp_jira" && entry.status?.status === "connected"));
+  console.log("PASS MCP catalog, browser token capture and live MCP connection without JSONC secret");
   await dismiss(); await admin({ level: "red" }); await demo.command("inference_status");
   await findForm("🔴");
   const configBefore = await readFile(demo.configPath, "utf8");
@@ -82,6 +96,7 @@ try {
   await findForm("Выход выполнен");
   assert(!parseConfig(await readFile(demo.configPath, "utf8")).providers);
   assert.equal(await readFile(join(demo.profile, "corporate-state/access-token"), "utf8"), "");
+  assert.equal(await stat(join(demo.profile, "corporate-state/mcp-tokens/jira")).then(() => true, () => false), false);
   assert(!JSON.stringify(demo.emulator.state.audit).includes(credential.accessToken));
   await dismiss(); await demo.command("corp_status");
   assert((await findForm("/corp_status")).fields[0].description.includes("Сначала выполните /login"));

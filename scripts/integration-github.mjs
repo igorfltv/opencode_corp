@@ -16,9 +16,9 @@ try {
   const plugins = (await demo.request("/api/plugin")).data;
   assert(plugins.some((plugin) => plugin.id === "company-corporate" && plugin.state.status === "active"));
   const commands = (await demo.request("/api/command")).data.map((command) => command.name);
-  for (const name of ["login", "refresh_config", "skills_load", "inference_status", "corp_status", "logout"]) assert(commands.includes(name));
-  console.log("PASS GitHub plugin loaded by OpenCode with all six slash commands");
-  for (const name of ["refresh_config", "skills_load", "inference_status", "corp_status", "logout"]) {
+  for (const name of ["login", "refresh_config", "skills_load", "mcps_load", "inference_status", "corp_status", "logout"]) assert(commands.includes(name));
+  console.log("PASS GitHub plugin loaded by OpenCode with all seven slash commands");
+  for (const name of ["refresh_config", "skills_load", "mcps_load", "inference_status", "corp_status", "logout"]) {
     await demo.command(name);
     const form = await eventually(async () => (await demo.forms()).find((entry) => entry.title.includes(`/${name}`)));
     assert(form.fields[0].description.includes("Сначала выполните /login"), `${name} did not require login`);

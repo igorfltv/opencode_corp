@@ -5,6 +5,8 @@ import { atomicWrite, exists, readJSON, serial, trustedURL } from "./io.js";
 import { CorporateAPI, Unauthorized } from "./api.js";
 import { applyConfig, removeProvider, validateConfig } from "./config.js";
 import { validateCatalog, installSkills } from "./skills.js";
+import { validateMCPCatalog, readMCPState, saveMCPSelection, clearMCP } from "./mcp.js";
+import { captureSecret } from "./secret-page.js";
 import { startLogin } from "./login.js";
 import { openBrowser, notifyDesktop } from "./desktop.js";
 import { OpenCodeBridge } from "./bridge.js";
@@ -26,6 +28,9 @@ export class CorporateRuntime {
     this.state = {};
     this.authGeneration = 0;
     this.load = { level: "unknown", message: "Нет свежих данных", checkedAt: null };
+    this.mcpCatalog = [];
+    this.mcpConfigs = [];
+    this.mcpReloaders = new Set();
   }
   async start() {
     this.credential = await readJSON(join(this.options.stateDir, "credential.json"));
@@ -37,8 +42,10 @@ export class CorporateRuntime {
       const tokenPath = join(this.options.stateDir, "access-token");
       if (await exists(tokenPath)) await atomicWrite(tokenPath, "");
       await removeProvider(this.options.configPath);
+      await clearMCP(this.options.stateDir);
       this.state = {};
     }
+    if (this.authenticated()) await this.refreshMCPCatalog().catch(() => {});
     this.configTimer = setInterval(() => this.backgroundRefresh(), this.options.refreshMs);
     this.loadTimer = setInterval(() => this.pollLoad().catch(() => {}), this.options.loadPollMs);
     this.configTimer.unref(); this.loadTimer.unref();
@@ -71,6 +78,7 @@ export class CorporateRuntime {
           if (applied.changed) await this.notice(`Корпоративный конфиг обновлён: версия ${applied.revision}`, "success");
         }
         await this.persistState();
+        await this.refreshMCPCatalog().catch(() => {});
         return this.state;
       } catch (error) {
         if (error instanceof Unauthorized) await this.invalidate();
@@ -89,6 +97,19 @@ export class CorporateRuntime {
   async invalidate() {
     this.credential = null;
     await Promise.all([rm(join(this.options.stateDir, "credential.json"), { force: true }), atomicWrite(join(this.options.stateDir, "access-token"), "")]);
+    await clearMCP(this.options.stateDir);
+    this.mcpConfigs = [];
+    await this.reloadMCP();
+  }
+  async reloadMCP() { await Promise.all([...this.mcpReloaders].map((reload) => reload())); }
+  async refreshMCPCatalog() {
+    const { data } = await this.api.request("/api/mcps", { token: this.token(), signal: this.abort.signal });
+    const catalog = validateMCPCatalog(data, this.options.serverURL);
+    const configs = await readMCPState(this.options.stateDir, catalog);
+    this.mcpCatalog = catalog;
+    this.mcpConfigs = configs;
+    await this.reloadMCP();
+    return catalog;
   }
   async pollLoad() {
     if (this.polling || !this.credential) return;
@@ -142,6 +163,9 @@ export class CorporateRuntime {
         await this.queue(async () => {
           if (generation !== this.authGeneration || this.abort.signal.aborted) throw new Error("Вход отменён");
           this.credential = { accessToken: result.accessToken, expiresAt: result.expiresAt, user: result.user };
+          await clearMCP(this.options.stateDir);
+          this.mcpConfigs = [];
+          await this.reloadMCP();
           await atomicWrite(join(this.options.stateDir, "credential.json"), JSON.stringify(this.credential));
           await atomicWrite(join(this.options.stateDir, "access-token"), this.credential.accessToken);
           this.state = { ...(await applyConfig({ ...this.options, envelope: result.configuration })), lastError: null };
@@ -180,6 +204,53 @@ export class CorporateRuntime {
         });
         await reload();
         await this.bridge.message(sessionID, "Skills загружены", installed.length ? installed.join("\n") : "Ничего не выбрано.");
+      } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
+    })(), sessionID);
+  }
+  async mcps(sessionID) {
+    if (this.forms.has(sessionID)) throw new Error("Форма выбора уже открыта");
+    const token = this.token();
+    const catalog = await this.refreshMCPCatalog();
+    if (!catalog.length) return this.bridge.message(sessionID, "Корпоративные MCP", "Для вашей учётной записи нет доступных MCP.");
+    const selected = this.mcpConfigs.map(({ name }) => name.slice(5));
+    const form = await this.bridge.form(sessionID, "Подключить корпоративные MCP", [{
+      type: "multiselect", key: "mcps", title: "Выберите MCP", description: "Личные токены вводятся отдельно в локальном браузере, не в чате OpenCode.",
+      custom: false, minItems: 0, default: selected,
+      options: catalog.map((item) => ({ value: item.id, label: item.name, description: item.description })),
+    }]);
+    const controller = new AbortController();
+    this.forms.set(sessionID, { form, controller });
+    this.track((async () => {
+      try {
+        const signal = AbortSignal.any([this.abort.signal, controller.signal, AbortSignal.timeout(300000)]);
+        const answer = await this.bridge.wait(sessionID, form.id, signal);
+        if (answer === null) return;
+        const ids = answer.mcps ?? [];
+        const tokens = new Map();
+        for (const id of ids) {
+          const item = catalog.find((entry) => entry.id === id);
+          if (!item) throw new Error("Выбран MCP вне доступного каталога");
+          if (selected.includes(id)) continue;
+          const page = await captureSecret(`Личный токен для ${item.name}`);
+          const cancel = () => page.cancel();
+          signal.addEventListener("abort", cancel, { once: true });
+          let notice;
+          try {
+            notice = await this.bridge.form(sessionID, `Токен ${item.name}`, [{ type: "external", key: "token", title: "Открыть защищённую локальную форму", url: page.url }]);
+            await this.open(page.url).catch(() => {});
+            tokens.set(id, await page.result);
+          } finally {
+            signal.removeEventListener("abort", cancel);
+            page.cancel();
+            if (notice) await this.bridge.cancel(sessionID, notice.id);
+          }
+        }
+        await this.queue(async () => {
+          if (this.token() !== token) throw new Error("Учётная запись изменилась; откройте /mcps_load снова");
+          this.mcpConfigs = await saveMCPSelection(this.options.stateDir, ids, catalog, tokens);
+          await this.reloadMCP();
+        });
+        await this.bridge.message(sessionID, "MCP настроены", ids.length ? `${ids.map((id) => catalog.find((item) => item.id === id).name).join("\n")}\nПроверьте подключение через /mcps.` : "Все корпоративные MCP отключены.");
       } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
     })(), sessionID);
   }

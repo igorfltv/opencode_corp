@@ -21,6 +21,12 @@ export default {
     entry.refs++;
     await entry.ready;
     const runtime = entry.runtime;
+    const reloadMCP = () => context.mcp.reload();
+    runtime.mcpReloaders.add(reloadMCP);
+    const mcpRegistration = await context.mcp.transform((editor) => {
+      for (const [name] of editor.list()) if (name.startsWith("corp_")) editor.remove(name);
+      if (runtime.authenticated()) for (const { name, config } of runtime.mcpConfigs) editor.set(name, config);
+    });
     const registration = await context.rpc.register(rpc, { status: async () => runtime.status() });
     const listener = (event) => registration.events.emit("notice", event);
     runtime.listeners.add(listener);
@@ -28,6 +34,7 @@ export default {
       ["login", "Войти в корпоративный OpenCode через браузер", (id) => runtime.login(id)],
       ["refresh_config", "Получить и применить корпоративный конфиг", async (id) => { const state = await runtime.refresh(); await runtime.bridge.message(id, "Конфиг актуален", `Версия ${state.revision}. Проверено: ${state.checkedAt}`); }],
       ["skills_load", "Выбрать и загрузить корпоративные skills", (id) => runtime.skills(id, () => context.skill.reload())],
+      ["mcps_load", "Выбрать корпоративные MCP и ввести личные токены", (id) => runtime.mcps(id)],
       ["logout", "Выйти из корпоративной учётной записи", async (id) => { await runtime.logout(); await runtime.bridge.message(id, "Выход выполнен", "Токен удалён, корпоративный провайдер отключён. Скачанные skills сохранены."); }],
       ["corp_status", "Учётная запись, версия конфига и состояние инференса", async (id) => { const status = runtime.status(); await runtime.bridge.message(id, "Корпоративный статус", `${status.authenticated ? status.user.name : "Не выполнен вход — /login"}\nКонфиг: ${status.config.revision ?? "не загружен"}\nПоследняя проверка: ${status.config.checkedAt ?? "ещё не было"}\n${lights[status.load.level]} ${status.load.message}\nАвтообновление: ${status.refreshMinutes} мин.${status.config.lastError ? `\n${status.config.lastError}` : ""}`); }],
       ["inference_status", "Светофор нагрузки на инференс", async (id) => { runtime.token(); await runtime.pollLoad(); await runtime.bridge.message(id, `${lights[runtime.load.level]} Инференс`, runtime.load.message); }],
@@ -45,6 +52,8 @@ export default {
       } });
     });
     return () => {
+      runtime.mcpReloaders.delete(reloadMCP);
+      mcpRegistration.dispose?.();
       runtime.listeners.delete(listener);
       if (--entry.refs === 0) { runtime.dispose(); registry.delete(key); }
     };
