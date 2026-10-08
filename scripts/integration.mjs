@@ -77,7 +77,9 @@ try {
   const tokenURL = tokenForm.fields[0].url;
   const tokenHTML = await (await fetch(tokenURL)).text();
   assert(tokenHTML.includes("Jira") && tokenHTML.includes("Confluence"));
-  const tokenResponse = await fetch(tokenURL, { method: "POST", headers: { Origin: new URL(tokenURL).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token%3Ajira=demo-jira-token&token%3Aconfluence=demo-confluence-token" });
+  const csrf = tokenHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
+  assert(csrf);
+  const tokenResponse = await fetch(tokenURL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "demo-jira-token", "token:confluence": "demo-confluence-token" }) });
   assert.equal(tokenResponse.status, 200);
   await findForm("MCP настроены");
   assert(!(await readFile(demo.configPath, "utf8")).includes("demo-jira-token"));

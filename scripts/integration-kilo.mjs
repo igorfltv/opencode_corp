@@ -103,7 +103,9 @@ try {
   const tokenURL = await eventually(async () => (await readFile(browserLog, "utf8")).split("\n").find((line) => line.includes("/secret/")), "Kilo did not open token form");
   const tokenHTML = await (await fetch(tokenURL)).text();
   assert(tokenHTML.includes("Confluence"));
-  assert.equal((await fetch(tokenURL, { method: "POST", headers: { Origin: new URL(tokenURL).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token%3Aconfluence=demo-confluence-token" })).status, 200);
+  const csrf = tokenHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
+  assert(csrf);
+  assert.equal((await fetch(tokenURL, { method: "POST", headers: { Origin: new URL(tokenURL).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:confluence": "demo-confluence-token" }) })).status, 200);
   assert.equal((await command).status, 200);
   assert.equal(JSON.parse(await readFile(configPath, "utf8")).mcp.corp_confluence.headers.Authorization, `Bearer {env:${mcpEnvName(stateDir, "confluence")}}`);
   assert.equal(await Bun.file(join(stateDir, "mcp-tokens/confluence")).exists(), false);

@@ -56,7 +56,10 @@ test("Kilo browser flow applies provider, skills and MCP without exposing tokens
     const mcpSelection = await eventually(() => pages.find((url) => url.includes("/form/") && url !== selection));
     expect((await fetch(mcpSelection, { method: "POST", headers: { Origin: new URL(mcpSelection).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "choice=jira" })).status).toBe(200);
     const secret = await eventually(() => pages.find((url) => url.includes("/secret/")));
-    expect((await fetch(secret, { method: "POST", headers: { Origin: new URL(secret).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token%3Ajira=demo-jira-token" })).status).toBe(200);
+    const secretHTML = await (await fetch(secret)).text();
+    const csrf = secretHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
+    expect(csrf).toBeTruthy();
+    expect((await fetch(secret, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "demo-jira-token" }) })).status).toBe(200);
     await eventually(async () => Boolean(parseConfig(await readFile(options.configPath, "utf8")).mcp?.corp_jira));
     const text = await readFile(options.configPath, "utf8");
     expect(text).toContain("// preserve");
