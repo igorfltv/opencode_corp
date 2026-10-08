@@ -7,8 +7,8 @@ import { KiloBridge } from "./kilo-bridge.js";
 import { syncKiloMCP } from "./config.js";
 import { atomicWrite, random, serial } from "./io.js";
 
-const key = Symbol.for("company.kilo.corporate.control.v4");
-const legacyKeys = [Symbol.for("company.kilo.corporate.control.v3"), Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
+const key = Symbol.for("company.kilo.corporate.control.v5");
+const legacyKeys = [Symbol.for("company.kilo.corporate.control.v4"), Symbol.for("company.kilo.corporate.control.v3"), Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
 const commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
 
 export async function startKiloControl(settings = {}, adapters = {}) {

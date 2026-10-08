@@ -115,6 +115,32 @@ test("one browser form captures only requested MCP tokens and never echoes them"
   } finally { page.cancel(); }
 });
 
+test("browser waits for MCP setup and shows a safe result page", async () => {
+  let submitted = false;
+  const page = await captureSecrets([{ id: "jira", name: "Jira", description: "Задачи" }], {
+    timeoutMs: 2000,
+    onSubmit: async (tokens) => {
+      expect(tokens.get("jira")).toBe("private-token");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      submitted = true;
+      return { kind: "error", title: "Не все MCP подключились", message: "Попробуйте снова", items: [{ name: "<Jira>", status: "failed", detail: "Токен отклонён (HTTP 401)" }] };
+    },
+  });
+  try {
+    const html = await (await fetch(page.url)).text();
+    const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
+    const response = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "private-token" }) });
+    expect(response.status).toBe(200);
+    const result = await response.text();
+    expect(submitted).toBe(true);
+    expect(result).toContain("Не все MCP подключились");
+    expect(result).toContain("&lt;Jira&gt;");
+    expect(result).toContain("Токен отклонён (HTTP 401)");
+    expect(result).not.toContain("private-token");
+    expect([...await page.result]).toEqual([["jira", "private-token"]]);
+  } finally { page.cancel(); }
+});
+
 test("patches only its provider, preserves JSONC comments and stores no token in config", async () => {
   const root = await folder(), configPath = join(root, "opencode.jsonc"), stateDir = join(root, "state"), serverURL = "http://127.0.0.1:4310";
   const original = '{\n // Keep my comment\n "model": "personal/code",\n "providers": { "personal": { "name": "Personal" } },\n "share": "manual",\n}\n';

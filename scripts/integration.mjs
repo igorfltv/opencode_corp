@@ -81,7 +81,10 @@ try {
   assert(csrf);
   const tokenResponse = await fetch(tokenURL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "demo-jira-token", "token:confluence": "demo-confluence-token" }) });
   assert.equal(tokenResponse.status, 200);
-  await findForm("MCP настроены");
+  const connectedHTML = await tokenResponse.text();
+  assert(connectedHTML.includes("MCP подключены") && connectedHTML.includes("Jira") && connectedHTML.includes("Confluence"));
+  assert(!connectedHTML.includes("demo-jira-token") && !connectedHTML.includes("demo-confluence-token"));
+  assert(!(await demo.forms()).some((entry) => entry.title.includes("MCP настроены")));
   assert(!(await readFile(demo.configPath, "utf8")).includes("demo-jira-token"));
   assert(!(await readFile(demo.configPath, "utf8")).includes("demo-confluence-token"));
   assert.equal(parseConfig(await readFile(demo.configPath, "utf8")).mcp.servers.corp_jira.headers.Authorization, `Bearer {env:${mcpEnvName(join(demo.profile, "corporate-state"), "jira")}}`);
@@ -97,9 +100,11 @@ try {
   const retryHTML = await (await fetch(retryURL)).text();
   const retryCSRF = retryHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
   assert(retryCSRF);
-  assert.equal((await fetch(retryURL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: retryCSRF, "token:jira": "wrong-demo-token", "token:confluence": "demo-confluence-token" }) })).status, 200);
-  const failedMCPForm = await findForm("MCP не подключены");
-  assert(failedMCPForm.fields[0].description.includes("токен отклонён (HTTP 401)"));
+  const failedResponse = await fetch(retryURL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: retryCSRF, "token:jira": "wrong-demo-token", "token:confluence": "demo-confluence-token" }) });
+  assert.equal(failedResponse.status, 200);
+  const failedHTML = await failedResponse.text();
+  assert(failedHTML.includes("Не все MCP подключились") && failedHTML.includes("Токен отклонён (HTTP 401)"));
+  assert(!failedHTML.includes("wrong-demo-token"));
   await eventually(async () => (await demo.request("/api/mcp")).data?.some((entry) => entry.name === "corp_jira" && entry.status?.status === "failed"));
   await dismiss(); await demo.command("mcps_load");
   const replacementForm = await findForm("Подключить корпоративные MCP");
@@ -109,8 +114,9 @@ try {
   const replacementHTML = await (await fetch(replacementURL)).text();
   const replacementCSRF = replacementHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
   assert(replacementCSRF);
-  assert.equal((await fetch(replacementURL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: replacementCSRF, "token:jira": "demo-jira-token", "token:confluence": "demo-confluence-token" }) })).status, 200);
-  await findForm("MCP настроены");
+  const replacementResponse = await fetch(replacementURL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: replacementCSRF, "token:jira": "demo-jira-token", "token:confluence": "demo-confluence-token" }) });
+  assert.equal(replacementResponse.status, 200);
+  assert((await replacementResponse.text()).includes("MCP подключены"));
   await eventually(async () => (await demo.request("/api/mcp")).data?.filter((entry) => ["corp_jira", "corp_confluence"].includes(entry.name)).every((entry) => entry.status?.status === "connected"));
   console.log("PASS invalid MCP token is reported and existing selection accepts replacement tokens");
   await dismiss(); await admin({ level: "red" }); await demo.command("inference_status");

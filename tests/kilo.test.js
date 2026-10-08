@@ -59,7 +59,9 @@ test("Kilo browser flow applies provider, skills and MCP without exposing tokens
     const secretHTML = await (await fetch(secret)).text();
     const csrf = secretHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
     expect(csrf).toBeTruthy();
-    expect((await fetch(secret, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "demo-jira-token" }) })).status).toBe(200);
+    const connected = await fetch(secret, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "demo-jira-token" }) });
+    expect(connected.status).toBe(200);
+    expect((await connected.text()).includes("MCP добавлены в конфиг")).toBe(true);
     await eventually(async () => Boolean(parseConfig(await readFile(options.configPath, "utf8")).mcp?.corp_jira));
     const text = await readFile(options.configPath, "utf8");
     expect(text).toContain("// preserve");
@@ -67,7 +69,7 @@ test("Kilo browser flow applies provider, skills and MCP without exposing tokens
     expect(text).toContain(`{env:${mcpEnvName(options.stateDir, "jira")}}`);
     expect(process.env[mcpEnvName(options.stateDir, "jira")]).toBe("demo-jira-token");
     expect(await Bun.file(join(options.stateDir, "mcp-tokens/jira")).exists()).toBe(false);
-    expect(messages.some((item) => item.title === "MCP настроены")).toBe(true);
+    expect(messages.some((item) => item.title === "MCP добавлены")).toBe(true);
     await runtime.logout();
     const clean = parseConfig(await readFile(options.configPath, "utf8"));
     expect(clean.provider).toEqual({ personal: { name: "Personal" } });
