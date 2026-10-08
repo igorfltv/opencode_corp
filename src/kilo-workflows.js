@@ -1,24 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { atomicWrite, exists } from "./io.js";
+import { commands } from "./commands.js";
 
 const marker = "# opencode_corp managed Kilo workflow";
 const legacyMarker = "<!-- opencode_corp managed Kilo workflow -->";
-const descriptions = {
-  login: "Войти в корпоративный сервис",
-  refresh_config: "Обновить корпоративный конфиг",
-  skills_load: "Загрузить корпоративные skills",
-  mcps_load: "Подключить корпоративные MCP",
-  logout: "Выйти из корпоративного сервиса",
-  corp_status: "Показать корпоративный статус",
-  inference_status: "Показать нагрузку инференса",
-};
-
 const helper = String.raw`import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const names = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
+const names = new Set(${JSON.stringify(commands.map(({ name }) => name))});
 const name = process.argv[2];
 if (!names.has(name)) throw new Error("Неизвестная корпоративная команда");
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -65,7 +56,7 @@ export async function installKiloWorkflows(options) {
   const script = join(options.stateDir, "workflow-command.mjs");
   await atomicWrite(script, helper);
   const conflicts = [];
-  for (const [name, description] of Object.entries(descriptions)) {
+  for (const { name, kiloDescription: description } of commands) {
     const file = join(dirname(options.configPath), "commands", `${name}.md`);
     const current = await exists(file);
     if (current) {

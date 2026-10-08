@@ -6,10 +6,10 @@ import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
 import { KiloBridge } from "./kilo-bridge.js";
 import { syncKiloMCP } from "./config.js";
 import { atomicWrite, random, serial } from "./io.js";
+import { commandByName } from "./commands.js";
 
 const key = Symbol.for("company.kilo.corporate.control.v3");
 const legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
-const commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
 
 export async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
@@ -68,7 +68,7 @@ async function boot(options, adapters) {
     const jobs = await Promise.allSettled([...runtime.jobs]);
     const failure = jobs.find((item) => item.status === "rejected");
     if (failure) throw failure.reason;
-    return { message: messages.at(-1) ?? "Команда выполнена.", reload: ["login", "refresh_config", "skills_load", "mcps_load", "logout"].includes(command) };
+    return { message: messages.at(-1) ?? "Команда выполнена.", reload: commandByName.get(command).reload };
   });
   const server = createServer(async (request, response) => {
     const port = server.address().port;
@@ -84,7 +84,7 @@ async function boot(options, adapters) {
       return;
     }
     const command = request.url?.match(/^\/command\/([a-z_]+)$/)?.[1];
-    if (request.method !== "POST" || !commands.has(command)) {
+    if (request.method !== "POST" || !commandByName.has(command)) {
       response.writeHead(404, headers).end(JSON.stringify({ error: "Unknown command" }));
       return;
     }

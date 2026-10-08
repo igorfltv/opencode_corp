@@ -1,16 +1,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { optionsFromEnv } from "./runtime.js";
-
-const commands = [
-  ["login", "Войти в корпоративный сервис"],
-  ["refresh_config", "Обновить корпоративный конфиг"],
-  ["skills_load", "Загрузить корпоративные skills"],
-  ["mcps_load", "Подключить корпоративные MCP"],
-  ["logout", "Выйти из корпоративного сервиса"],
-  ["corp_status", "Показать корпоративный статус"],
-  ["inference_status", "Показать нагрузку инференса"],
-];
+import { commands } from "./commands.js";
 
 async function invokeControl(stateDir, command) {
   const files = (await readdir(stateDir)).filter((file) => /^control-\d+\.json$/.test(file));
@@ -50,8 +41,8 @@ export default {
   async tui(api, settings = {}) {
     if (!api.command?.register) throw new Error("Для корпоративных команд нужен Kilo CLI 7.x с TUI plugin API");
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
-    const unregister = api.command.register(() => commands.map(([name, description]) => ({
-      title: `/${name}`, value: `company.${name}`, description, category: "Company", slash: { name },
+    const unregister = api.command.register(() => commands.map(({ name, kiloDescription }) => ({
+      title: `/${name}`, value: `company.${name}`, description: kiloDescription, category: "Company", slash: { name },
       async onSelect() {
         try {
           const result = await invokeControl(options.stateDir, name);

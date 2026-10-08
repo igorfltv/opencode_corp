@@ -71,43 +71,35 @@ export async function removeProvider(configPath, client = "opencode") {
   await atomicWrite(configPath, text);
 }
 
-export async function syncKiloMCP(configPath, stateDir, configs) {
-  let text = await readFile(configPath, "utf8");
+async function syncMCP(configPath, stateDir, configs, path) {
+  const original = await readFile(configPath, "utf8");
+  let text = original;
   const current = parseConfig(text);
-  const existing = object(current.mcp) ? current.mcp : {};
-  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
+  const existing = path.length === 1 ? current.mcp : current.mcp?.servers;
+  const managedConfigs = object(existing) ? existing : {};
+  const managed = Object.keys(managedConfigs).filter((name) => name.startsWith("corp_"));
   const wanted = new Map(configs.map(({ name, config }) => {
     if (!name.startsWith("corp_") || config.headers?.Authorization !== `Bearer {env:${mcpEnvName(stateDir, name.slice(5))}}`) throw new Error("Некорректная MCP конфигурация");
     return [name, { type: "remote", url: config.url, oauth: false, headers: { Authorization: config.headers.Authorization } }];
   }));
-  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name)))) return false;
-  for (const name of managed) if (!wanted.has(name)) text = applyEdits(text, modify(text, ["mcp", name], undefined, {}));
-  for (const [name, config] of wanted) text = applyEdits(text, modify(text, ["mcp", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-  if (!Object.keys(parseConfig(text).mcp ?? {}).length) text = applyEdits(text, modify(text, ["mcp"], undefined, {}));
+  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(managedConfigs[name]) === JSON.stringify(wanted.get(name)))) return false;
+  for (const name of managed) if (!wanted.has(name)) text = applyEdits(text, modify(text, [...path, name], undefined, {}));
+  for (const [name, config] of wanted) text = applyEdits(text, modify(text, [...path, name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  const updated = parseConfig(text);
+  const section = path.length === 1 ? updated.mcp : updated.mcp?.servers;
+  if (!Object.keys(object(section) ? section : {}).length) text = applyEdits(text, modify(text, path, undefined, {}));
+  if (path.length > 1 && !Object.keys(parseConfig(text).mcp ?? {}).length) text = applyEdits(text, modify(text, ["mcp"], undefined, {}));
   parseConfig(text);
   const backup = `${configPath}.before-corporate.bak`;
-  if (!await exists(backup)) await atomicWrite(backup, await readFile(configPath, "utf8"));
+  if (!await exists(backup)) await atomicWrite(backup, original);
   await atomicWrite(configPath, text);
   return true;
 }
 
-export async function syncOpenCodeMCP(configPath, stateDir, configs) {
-  let text = await readFile(configPath, "utf8");
-  const current = parseConfig(text);
-  const existing = object(current.mcp?.servers) ? current.mcp.servers : {};
-  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
-  const wanted = new Map(configs.map(({ name, config }) => {
-    if (!name.startsWith("corp_") || config.headers?.Authorization !== `Bearer {env:${mcpEnvName(stateDir, name.slice(5))}}`) throw new Error("Некорректная MCP конфигурация");
-    return [name, { type: "remote", url: config.url, oauth: false, headers: { Authorization: config.headers.Authorization } }];
-  }));
-  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name)))) return false;
-  for (const name of managed) if (!wanted.has(name)) text = applyEdits(text, modify(text, ["mcp", "servers", name], undefined, {}));
-  for (const [name, config] of wanted) text = applyEdits(text, modify(text, ["mcp", "servers", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-  if (!Object.keys(parseConfig(text).mcp?.servers ?? {}).length) text = applyEdits(text, modify(text, ["mcp", "servers"], undefined, {}));
-  if (!Object.keys(parseConfig(text).mcp ?? {}).length) text = applyEdits(text, modify(text, ["mcp"], undefined, {}));
-  parseConfig(text);
-  const backup = `${configPath}.before-corporate.bak`;
-  if (!await exists(backup)) await atomicWrite(backup, await readFile(configPath, "utf8"));
-  await atomicWrite(configPath, text);
-  return true;
+export function syncKiloMCP(configPath, stateDir, configs) {
+  return syncMCP(configPath, stateDir, configs, ["mcp"]);
+}
+
+export function syncOpenCodeMCP(configPath, stateDir, configs) {
+  return syncMCP(configPath, stateDir, configs, ["mcp", "servers"]);
 }

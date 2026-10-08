@@ -1592,59 +1592,43 @@ async function removeProvider(configPath, client = "opencode") {
   parseConfig(text2);
   await atomicWrite(configPath, text2);
 }
-async function syncKiloMCP(configPath, stateDir, configs) {
-  let text2 = await readFile2(configPath, "utf8");
+async function syncMCP(configPath, stateDir, configs, path) {
+  const original = await readFile2(configPath, "utf8");
+  let text2 = original;
   const current = parseConfig(text2);
-  const existing = object(current.mcp) ? current.mcp : {};
-  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
+  const existing = path.length === 1 ? current.mcp : current.mcp?.servers;
+  const managedConfigs = object(existing) ? existing : {};
+  const managed = Object.keys(managedConfigs).filter((name) => name.startsWith("corp_"));
   const wanted = new Map(configs.map(({ name, config }) => {
     if (!name.startsWith("corp_") || config.headers?.Authorization !== `Bearer {env:${mcpEnvName(stateDir, name.slice(5))}}`)
       throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F MCP \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F");
     return [name, { type: "remote", url: config.url, oauth: false, headers: { Authorization: config.headers.Authorization } }];
   }));
-  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name))))
+  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(managedConfigs[name]) === JSON.stringify(wanted.get(name))))
     return false;
   for (const name of managed)
     if (!wanted.has(name))
-      text2 = applyEdits(text2, modify(text2, ["mcp", name], undefined, {}));
+      text2 = applyEdits(text2, modify(text2, [...path, name], undefined, {}));
   for (const [name, config] of wanted)
-    text2 = applyEdits(text2, modify(text2, ["mcp", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-  if (!Object.keys(parseConfig(text2).mcp ?? {}).length)
+    text2 = applyEdits(text2, modify(text2, [...path, name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  const updated = parseConfig(text2);
+  const section = path.length === 1 ? updated.mcp : updated.mcp?.servers;
+  if (!Object.keys(object(section) ? section : {}).length)
+    text2 = applyEdits(text2, modify(text2, path, undefined, {}));
+  if (path.length > 1 && !Object.keys(parseConfig(text2).mcp ?? {}).length)
     text2 = applyEdits(text2, modify(text2, ["mcp"], undefined, {}));
   parseConfig(text2);
   const backup = `${configPath}.before-corporate.bak`;
   if (!await exists(backup))
-    await atomicWrite(backup, await readFile2(configPath, "utf8"));
+    await atomicWrite(backup, original);
   await atomicWrite(configPath, text2);
   return true;
 }
-async function syncOpenCodeMCP(configPath, stateDir, configs) {
-  let text2 = await readFile2(configPath, "utf8");
-  const current = parseConfig(text2);
-  const existing = object(current.mcp?.servers) ? current.mcp.servers : {};
-  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
-  const wanted = new Map(configs.map(({ name, config }) => {
-    if (!name.startsWith("corp_") || config.headers?.Authorization !== `Bearer {env:${mcpEnvName(stateDir, name.slice(5))}}`)
-      throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F MCP \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F");
-    return [name, { type: "remote", url: config.url, oauth: false, headers: { Authorization: config.headers.Authorization } }];
-  }));
-  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name))))
-    return false;
-  for (const name of managed)
-    if (!wanted.has(name))
-      text2 = applyEdits(text2, modify(text2, ["mcp", "servers", name], undefined, {}));
-  for (const [name, config] of wanted)
-    text2 = applyEdits(text2, modify(text2, ["mcp", "servers", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-  if (!Object.keys(parseConfig(text2).mcp?.servers ?? {}).length)
-    text2 = applyEdits(text2, modify(text2, ["mcp", "servers"], undefined, {}));
-  if (!Object.keys(parseConfig(text2).mcp ?? {}).length)
-    text2 = applyEdits(text2, modify(text2, ["mcp"], undefined, {}));
-  parseConfig(text2);
-  const backup = `${configPath}.before-corporate.bak`;
-  if (!await exists(backup))
-    await atomicWrite(backup, await readFile2(configPath, "utf8"));
-  await atomicWrite(configPath, text2);
-  return true;
+function syncKiloMCP(configPath, stateDir, configs) {
+  return syncMCP(configPath, stateDir, configs, ["mcp"]);
+}
+function syncOpenCodeMCP(configPath, stateDir, configs) {
+  return syncMCP(configPath, stateDir, configs, ["mcp", "servers"]);
 }
 
 // src/skills.js
@@ -2447,10 +2431,71 @@ class KiloBridge {
   }
 }
 
+// src/commands.js
+var commands = Object.freeze([
+  { name: "login", description: "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode \u0447\u0435\u0440\u0435\u0437 \u0431\u0440\u0430\u0443\u0437\u0435\u0440", kiloDescription: "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0438\u0441", reload: true },
+  { name: "refresh_config", description: "\u041F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0438 \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433", kiloDescription: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433", reload: true },
+  { name: "skills_load", description: "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", kiloDescription: "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", reload: true },
+  { name: "mcps_load", description: "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u0438 \u0432\u0432\u0435\u0441\u0442\u0438 \u043B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B", kiloDescription: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", reload: true },
+  { name: "logout", description: "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438", kiloDescription: "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0441\u0435\u0440\u0432\u0438\u0441\u0430", reload: true },
+  { name: "corp_status", description: "\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C, \u0432\u0435\u0440\u0441\u0438\u044F \u043A\u043E\u043D\u0444\u0438\u0433\u0430 \u0438 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441\u0430", kiloDescription: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441", reload: false },
+  { name: "inference_status", description: "\u0421\u0432\u0435\u0442\u043E\u0444\u043E\u0440 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0430 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441", kiloDescription: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0443 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441\u0430", reload: false }
+]);
+var commandByName = new Map(commands.map((command) => [command.name, command]));
+async function runOpenCodeCommand(runtime, context, name, sessionID) {
+  switch (name) {
+    case "login":
+      return runtime.login(sessionID);
+    case "refresh_config": {
+      const state = await runtime.refresh();
+      return runtime.bridge.message(sessionID, "\u041A\u043E\u043D\u0444\u0438\u0433 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D", `\u0412\u0435\u0440\u0441\u0438\u044F ${state.revision}. \u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E: ${state.checkedAt}`);
+    }
+    case "skills_load":
+      return runtime.skills(sessionID, () => context.skill.reload());
+    case "mcps_load":
+      return runtime.mcps(sessionID);
+    case "logout": {
+      await runtime.logout();
+      return runtime.bridge.message(sessionID, "\u0412\u044B\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", "\u0422\u043E\u043A\u0435\u043D \u0443\u0434\u0430\u043B\u0451\u043D, \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u0440\u043E\u0432\u0430\u0439\u0434\u0435\u0440 \u043E\u0442\u043A\u043B\u044E\u0447\u0451\u043D. \u0421\u043A\u0430\u0447\u0430\u043D\u043D\u044B\u0435 skills \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B.");
+    }
+    case "corp_status": {
+      const status = runtime.status();
+      return runtime.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441", `${status.authenticated ? status.user.name : "\u041D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D \u0432\u0445\u043E\u0434 \u2014 /login"}
+\u041A\u043E\u043D\u0444\u0438\u0433: ${status.config.revision ?? "\u043D\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D"}
+\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430: ${status.config.checkedAt ?? "\u0435\u0449\u0451 \u043D\u0435 \u0431\u044B\u043B\u043E"}
+${lights[status.load.level]} ${status.load.message}
+\u0410\u0432\u0442\u043E\u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435: ${status.refreshMinutes} \u043C\u0438\u043D.${status.config.lastError ? `
+${status.config.lastError}` : ""}`);
+    }
+    case "inference_status": {
+      runtime.token();
+      await runtime.pollLoad();
+      return runtime.bridge.message(sessionID, `${lights[runtime.load.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441`, runtime.load.message);
+    }
+    default:
+      throw new Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430");
+  }
+}
+function registerOpenCodeCommands(context, runtime) {
+  return context.command.transform((registry) => {
+    for (const { name, description } of commands)
+      registry.add({ name, description, async execute({ sessionID }) {
+        try {
+          if (name !== "login" && !runtime.authenticated()) {
+            await runtime.bridge.message(sessionID, `/${name}`, "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login, \u0447\u0442\u043E\u0431\u044B \u0432\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode.");
+            return;
+          }
+          await runOpenCodeCommand(runtime, context, name, sessionID);
+        } catch (error) {
+          await runtime.bridge.message(sessionID, `/${name}`, error.message);
+        }
+      } });
+  });
+}
+
 // src/kilo-control.js
 var key = Symbol.for("company.kilo.corporate.control.v3");
 var legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
-var commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
 async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
   const name = `${options.configPath}|${options.serverURL}`;
@@ -2519,7 +2564,7 @@ ${lights[status.load.level]} ${status.load.message}`);
     const failure = jobs.find((item) => item.status === "rejected");
     if (failure)
       throw failure.reason;
-    return { message: messages.at(-1) ?? "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430.", reload: ["login", "refresh_config", "skills_load", "mcps_load", "logout"].includes(command) };
+    return { message: messages.at(-1) ?? "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430.", reload: commandByName.get(command).reload };
   });
   const server = createServer3(async (request, response) => {
     const port = server.address().port;
@@ -2535,7 +2580,7 @@ ${lights[status.load.level]} ${status.load.message}`);
       return;
     }
     const command = request.url?.match(/^\/command\/([a-z_]+)$/)?.[1];
-    if (request.method !== "POST" || !commands.has(command)) {
+    if (request.method !== "POST" || !commandByName.has(command)) {
       response.writeHead(404, headers).end(JSON.stringify({ error: "Unknown command" }));
       return;
     }
@@ -2581,20 +2626,11 @@ import { readFile as readFile4 } from "fs/promises";
 import { dirname as dirname2, join as join6 } from "path";
 var marker = "# opencode_corp managed Kilo workflow";
 var legacyMarker = "<!-- opencode_corp managed Kilo workflow -->";
-var descriptions = {
-  login: "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0438\u0441",
-  refresh_config: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433",
-  skills_load: "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills",
-  mcps_load: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP",
-  logout: "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0441\u0435\u0440\u0432\u0438\u0441\u0430",
-  corp_status: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441",
-  inference_status: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0443 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441\u0430"
-};
 var helper = String.raw`import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const names = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
+const names = new Set(${JSON.stringify(commands.map(({ name }) => name))});
 const name = process.argv[2];
 if (!names.has(name)) throw new Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430");
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -2640,7 +2676,7 @@ async function installKiloWorkflows(options) {
   const script = join6(options.stateDir, "workflow-command.mjs");
   await atomicWrite(script, helper);
   const conflicts = [];
-  for (const [name, description] of Object.entries(descriptions)) {
+  for (const { name, kiloDescription: description } of commands) {
     const file = join6(dirname2(options.configPath), "commands", `${name}.md`);
     const current = await exists(file);
     if (current) {
@@ -2676,7 +2712,14 @@ var rpc = {
   methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } }
 };
-var registryKey = Symbol.for("company.opencode.corporate.runtime.v5");
+var registryKey = Symbol.for("company.opencode.corporate.runtime.v6");
+function release(registry, key2, entry) {
+  if (--entry.refs !== 0)
+    return;
+  entry.runtime.dispose();
+  if (registry.get(key2) === entry)
+    registry.delete(key2);
+}
 var plugin_default = {
   id: "company-corporate",
   async server(_context, settings) {
@@ -2698,77 +2741,50 @@ var plugin_default = {
       registry.set(key2, entry);
     }
     entry.refs++;
-    await entry.ready;
     const runtime = entry.runtime;
-    const reloadMCP = () => context.mcp.reload();
-    runtime.mcpReloaders.add(reloadMCP);
-    const mcpRegistration = await context.mcp.transform((editor) => {
-      for (const [name] of editor.list())
-        if (name.startsWith("corp_"))
-          editor.remove(name);
-      if (runtime.authenticated())
-        for (const { name, config } of runtime.mcpConfigs) {
-          const value = process.env[mcpEnvName(options.stateDir, name.slice(5))];
-          if (value)
-            editor.set(name, { ...config, headers: { Authorization: `Bearer ${value}` } });
-        }
-    });
-    const registration = await context.rpc.register(rpc, { status: async () => runtime.status() });
-    const listener = (event) => registration.events.emit("notice", event);
-    runtime.listeners.add(listener);
-    const definitions = [
-      ["login", "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode \u0447\u0435\u0440\u0435\u0437 \u0431\u0440\u0430\u0443\u0437\u0435\u0440", (id) => runtime.login(id)],
-      ["refresh_config", "\u041F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0438 \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433", async (id) => {
-        const state = await runtime.refresh();
-        await runtime.bridge.message(id, "\u041A\u043E\u043D\u0444\u0438\u0433 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D", `\u0412\u0435\u0440\u0441\u0438\u044F ${state.revision}. \u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E: ${state.checkedAt}`);
-      }],
-      ["skills_load", "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", (id) => runtime.skills(id, () => context.skill.reload())],
-      ["mcps_load", "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u0438 \u0432\u0432\u0435\u0441\u0442\u0438 \u043B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B", (id) => runtime.mcps(id)],
-      ["logout", "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438", async (id) => {
-        await runtime.logout();
-        await runtime.bridge.message(id, "\u0412\u044B\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", "\u0422\u043E\u043A\u0435\u043D \u0443\u0434\u0430\u043B\u0451\u043D, \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u0440\u043E\u0432\u0430\u0439\u0434\u0435\u0440 \u043E\u0442\u043A\u043B\u044E\u0447\u0451\u043D. \u0421\u043A\u0430\u0447\u0430\u043D\u043D\u044B\u0435 skills \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B.");
-      }],
-      ["corp_status", "\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C, \u0432\u0435\u0440\u0441\u0438\u044F \u043A\u043E\u043D\u0444\u0438\u0433\u0430 \u0438 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441\u0430", async (id) => {
-        const status = runtime.status();
-        await runtime.bridge.message(id, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441", `${status.authenticated ? status.user.name : "\u041D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D \u0432\u0445\u043E\u0434 \u2014 /login"}
-\u041A\u043E\u043D\u0444\u0438\u0433: ${status.config.revision ?? "\u043D\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D"}
-\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430: ${status.config.checkedAt ?? "\u0435\u0449\u0451 \u043D\u0435 \u0431\u044B\u043B\u043E"}
-${lights[status.load.level]} ${status.load.message}
-\u0410\u0432\u0442\u043E\u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435: ${status.refreshMinutes} \u043C\u0438\u043D.${status.config.lastError ? `
-${status.config.lastError}` : ""}`);
-      }],
-      ["inference_status", "\u0421\u0432\u0435\u0442\u043E\u0444\u043E\u0440 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0430 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441", async (id) => {
-        runtime.token();
-        await runtime.pollLoad();
-        await runtime.bridge.message(id, `${lights[runtime.load.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441`, runtime.load.message);
-      }]
-    ];
-    await context.command.transform((commands2) => {
-      for (const [name, description, execute] of definitions)
-        commands2.add({ name, description, async execute({ sessionID }) {
-          try {
-            if (name !== "login" && !runtime.authenticated()) {
-              await runtime.bridge.message(sessionID, `/${name}`, "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login, \u0447\u0442\u043E\u0431\u044B \u0432\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode.");
-              return;
-            }
-            await execute(sessionID);
-          } catch (error) {
-            await runtime.bridge.message(sessionID, `/${name}`, error.message);
+    let mcpRegistration, rpcRegistration, reloadMCP, listener;
+    try {
+      await entry.ready;
+      reloadMCP = () => context.mcp.reload();
+      runtime.mcpReloaders.add(reloadMCP);
+      mcpRegistration = await context.mcp.transform((editor) => {
+        for (const [name] of editor.list())
+          if (name.startsWith("corp_"))
+            editor.remove(name);
+        if (runtime.authenticated())
+          for (const { name, config } of runtime.mcpConfigs) {
+            const value = process.env[mcpEnvName(options.stateDir, name.slice(5))];
+            if (value)
+              editor.set(name, { ...config, headers: { Authorization: `Bearer ${value}` } });
           }
-        } });
-    });
-    if (!entry.autoLoginStarted) {
-      entry.autoLoginStarted = true;
-      runtime.autoLogin();
-    }
-    return () => {
-      runtime.mcpReloaders.delete(reloadMCP);
-      mcpRegistration.dispose?.();
-      runtime.listeners.delete(listener);
-      if (--entry.refs === 0) {
-        runtime.dispose();
-        registry.delete(key2);
+      });
+      rpcRegistration = await context.rpc.register(rpc, { status: async () => runtime.status() });
+      listener = (event) => rpcRegistration.events.emit("notice", event);
+      runtime.listeners.add(listener);
+      await registerOpenCodeCommands(context, runtime);
+      if (!entry.autoLoginStarted) {
+        entry.autoLoginStarted = true;
+        runtime.autoLogin();
       }
+    } catch (error) {
+      runtime.mcpReloaders.delete(reloadMCP);
+      if (listener)
+        runtime.listeners.delete(listener);
+      rpcRegistration?.dispose?.();
+      mcpRegistration?.dispose?.();
+      release(registry, key2, entry);
+      throw error;
+    }
+    let disposed = false;
+    return () => {
+      if (disposed)
+        return;
+      disposed = true;
+      runtime.mcpReloaders.delete(reloadMCP);
+      mcpRegistration?.dispose?.();
+      runtime.listeners.delete(listener);
+      rpcRegistration.dispose?.();
+      release(registry, key2, entry);
     };
   }
 };

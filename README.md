@@ -360,8 +360,9 @@ bun run test:kilo
 bun run test:auto-login
 ```
 
-22 теста проверяют PKCE/state/replay, роли, отзыв токена, JSONC, пути skills,
-контрольные суммы, локальные правки, нагрузку и гонку смены учётной записи.
+25 тестов проверяют PKCE/state/replay, роли, отзыв токена, JSONC, пути skills,
+контрольные суммы, локальные правки, нагрузку, гонку смены учётной записи и
+повторную загрузку OpenCode-плагина после ошибки регистрации.
 Интеграционная проверка запускает **настоящий установленный OpenCode**, выполняет
 команды и отвечает на встроенные формы через API. Проверяются вход, live config reload,
 ручная и автоматическая синхронизация, skill discovery, нагрузка, сбой API, истечение
@@ -378,6 +379,12 @@ bun run test:auto-login
 не автоматизирован. Источник контракта: [OpenCode 2.0.24 Plugin API](https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/promise/plugin.ts),
 [Commands](https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/promise/command.ts),
 [Forms](https://github.com/anomalyco/opencode/blob/v2.0.24/packages/schema/src/form.ts).
+
+Команды OpenCode, Kilo TUI и Kilo workflows описаны в `src/commands.js`.
+`src/plugin.js` управляет регистрациями OpenCode и общим runtime, а `src/config.js`
+вносит изменения в JSONC, сохраняя пользовательские поля и комментарии.
+После изменения исходников запустите `bun run bundle` и включите обновлённые
+`server.js` и `tui.js` в коммит: GitHub-плагин загружает эти готовые файлы.
 
 ## Перед реальной корпоративной эксплуатацией
 
