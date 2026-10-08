@@ -1,6 +1,40 @@
-import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
-import { syncKiloMCP } from "./config.js";
-import { KiloBridge } from "./kilo-bridge.js";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { optionsFromEnv } from "./runtime.js";
+
+const commands = [
+  ["login", "Войти в корпоративный сервис"],
+  ["refresh_config", "Обновить корпоративный конфиг"],
+  ["skills_load", "Загрузить корпоративные skills"],
+  ["mcps_load", "Подключить корпоративные MCP"],
+  ["logout", "Выйти из корпоративного сервиса"],
+  ["corp_status", "Показать корпоративный статус"],
+  ["inference_status", "Показать нагрузку инференса"],
+];
+
+async function invokeControl(stateDir, command) {
+  const files = (await readdir(stateDir)).filter((file) => /^control-\d+\.json$/.test(file));
+  files.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
+  files.unshift("control.json");
+  for (const file of files) {
+    let state;
+    try {
+      const path = join(stateDir, file);
+      if ((await stat(path)).mode & 0o077) continue;
+      state = JSON.parse(await readFile(path, "utf8"));
+      if (!Number.isInteger(state.port) || state.port < 1 || state.port > 65535 || typeof state.secret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(state.secret)) continue;
+      const health = await fetch(`http://127.0.0.1:${state.port}/health`, { headers: { Authorization: `Bearer ${state.secret}` }, signal: AbortSignal.timeout(1000) });
+      if (!health.ok) continue;
+    } catch { continue; }
+    const response = await fetch(`http://127.0.0.1:${state.port}/command/${command}`, {
+      method: "POST", headers: { Authorization: `Bearer ${state.secret}` }, signal: AbortSignal.timeout(310000),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? "Команда не выполнена");
+    return result;
+  }
+  throw new Error("Корпоративный плагин Kilo не запущен");
+}
 
 export default {
   id: "company-corporate-ui",
@@ -16,36 +50,21 @@ export default {
   async tui(api, settings = {}) {
     if (!api.command?.register) throw new Error("Для корпоративных команд нужен Kilo CLI 7.x с TUI plugin API");
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
-    const bridge = new KiloBridge((item) => api.ui.toast(item));
-    const runtime = new CorporateRuntime(options, {
-      bridge,
-      syncMCP: (configs) => syncKiloMCP(options.configPath, options.stateDir, configs),
-    });
-    await runtime.start();
-    const notice = ({ message, level }) => api.ui.toast({ title: "Company Kilo", message, variant: level, duration: 7000 });
-    runtime.listeners.add(notice);
-    const reloadKilo = async () => {
-      const result = await api.client.instance.reload();
-      if (result.error) throw new Error("Kilo не смог обновить конфигурацию. Повторите действие после завершения активной сессии.");
-    };
-    const commands = [
-      ["login", "Войти в корпоративный сервис", (id) => runtime.login(id, reloadKilo)],
-      ["refresh_config", "Обновить корпоративный конфиг", async () => { const state = await runtime.refresh(); await reloadKilo(); await bridge.message(null, "Конфиг актуален", `Версия ${state.revision}. Проверено: ${state.checkedAt}`); }],
-      ["skills_load", "Загрузить корпоративные skills", (id) => runtime.skills(id, reloadKilo)],
-      ["mcps_load", "Подключить корпоративные MCP", (id) => runtime.mcps(id, reloadKilo)],
-      ["logout", "Выйти из корпоративной учётной записи", async () => { await runtime.logout(); await reloadKilo(); await bridge.message(null, "Выход выполнен", "Корпоративные токены и провайдер удалены."); }],
-      ["corp_status", "Показать корпоративный статус", async () => { const status = runtime.status(); await bridge.message(null, "Корпоративный статус", `${status.authenticated ? status.user.name : "Не выполнен вход — /login"}\nКонфиг: ${status.config.revision ?? "не загружен"}\n${lights[status.load.level]} ${status.load.message}`); }],
-      ["inference_status", "Показать нагрузку инференса", async () => { runtime.token(); await runtime.pollLoad(); await bridge.message(null, `${lights[runtime.load.level]} Инференс`, runtime.load.message); }],
-    ];
-    const unregister = api.command.register(() => commands.map(([name, description, execute]) => ({
+    const unregister = api.command.register(() => commands.map(([name, description]) => ({
       title: `/${name}`, value: `company.${name}`, description, category: "Company", slash: { name },
       async onSelect() {
         try {
-          if (name !== "login" && !runtime.authenticated()) { await bridge.message(null, `/${name}`, "Сначала выполните /login."); return; }
-          await execute("kilo-tui");
-        } catch (error) { await bridge.message(null, `/${name}`, error.message); }
+          const result = await invokeControl(options.stateDir, name);
+          if (result.reload) {
+            const updated = await api.client.instance.reload();
+            if (updated.error) throw new Error("Kilo не смог обновить конфигурацию");
+          }
+          api.ui.toast({ title: `/${name}`, message: result.message, variant: "info", duration: 10000 });
+        } catch (error) {
+          api.ui.toast({ title: `/${name}`, message: error.message, variant: "error", duration: 10000 });
+        }
       },
     })));
-    api.lifecycle.onDispose(() => { unregister(); runtime.listeners.delete(notice); runtime.dispose(); bridge.dispose(); });
+    api.lifecycle.onDispose(unregister);
   },
 };

@@ -1433,7 +1433,84 @@ function applyEdits(text, edits) {
 
 // src/config.js
 import { readFile as readFile2 } from "fs/promises";
+import { join as join2 } from "path";
+
+// src/mcp.js
+import { rm } from "fs/promises";
 import { join } from "path";
+import { createHash as createHash2 } from "crypto";
+var idPattern = /^[a-z][a-z0-9_-]{0,39}$/;
+var text = (value, max = 200) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
+var validToken = (value) => text(value, 512) && !/[\r\n]/.test(value);
+function validateMCPCatalog(data, serverURL) {
+  if (!data || !Array.isArray(data.servers) || data.servers.length > 30)
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043A\u0430\u0442\u0430\u043B\u043E\u0433 MCP");
+  const ids = new Set;
+  return data.servers.map((entry) => {
+    if (!entry || !idPattern.test(entry.id) || ids.has(entry.id) || !text(entry.name, 100) || !text(entry.description) || entry.auth !== "personal_token")
+      throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C MCP");
+    ids.add(entry.id);
+    const url = trustedURL(entry.url);
+    if (new URL(url).origin !== new URL(serverURL).origin || new URL(url).pathname !== `/mcp/${entry.id}`)
+      throw new Error("MCP \u0434\u043E\u043B\u0436\u0435\u043D \u043D\u0430\u0445\u043E\u0434\u0438\u0442\u044C\u0441\u044F \u043D\u0430 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u043C \u0441\u0435\u0440\u0432\u0435\u0440\u0435");
+    return { id: entry.id, name: entry.name, description: entry.description, url, auth: entry.auth };
+  });
+}
+function validateSelection(ids, catalog) {
+  if (!Array.isArray(ids) || ids.length > catalog.length || new Set(ids).size !== ids.length || ids.some((id) => !catalog.some((entry) => entry.id === id)))
+    throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D MCP \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
+  return ids;
+}
+function mcpEnvName(stateDir, id) {
+  if (!idPattern.test(id))
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID MCP");
+  const profile = createHash2("sha256").update(stateDir).digest("hex").slice(0, 12).toUpperCase();
+  return `CORP_MCP_${profile}_${Buffer.from(id).toString("hex").toUpperCase()}_TOKEN`;
+}
+function configFor(stateDir, entry) {
+  const env = mcpEnvName(stateDir, entry.id);
+  return { name: `corp_${entry.id}`, config: {
+    type: "remote",
+    url: entry.url,
+    oauth: false,
+    headers: { Authorization: `Bearer {env:${env}}` }
+  } };
+}
+function readMCPState(stateDir, catalog) {
+  return catalog.filter((entry) => validToken(process.env[mcpEnvName(stateDir, entry.id)])).map((entry) => configFor(stateDir, entry));
+}
+function saveMCPSelection(stateDir, ids, catalog, tokens) {
+  validateSelection(ids, catalog);
+  if (!(tokens instanceof Map) || [...tokens.keys()].some((id) => !ids.includes(id)))
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043D\u0430\u0431\u043E\u0440 \u0442\u043E\u043A\u0435\u043D\u043E\u0432 MCP");
+  for (const id of ids) {
+    const value = tokens.has(id) ? tokens.get(id) : process.env[mcpEnvName(stateDir, id)];
+    if (!validToken(value))
+      throw new Error(`\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043B\u0438\u0447\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D MCP: ${id}`);
+  }
+  for (const id of ids)
+    if (tokens.has(id))
+      process.env[mcpEnvName(stateDir, id)] = tokens.get(id);
+  for (const entry of catalog)
+    if (!ids.includes(entry.id))
+      delete process.env[mcpEnvName(stateDir, entry.id)];
+  return ids.map((id) => configFor(stateDir, catalog.find((entry) => entry.id === id)));
+}
+function clearMCPEnv(stateDir) {
+  const profile = createHash2("sha256").update(stateDir).digest("hex").slice(0, 12).toUpperCase();
+  for (const key of Object.keys(process.env))
+    if (key.startsWith(`CORP_MCP_${profile}_`) && key.endsWith("_TOKEN"))
+      delete process.env[key];
+}
+async function clearMCP(stateDir) {
+  clearMCPEnv(stateDir);
+  await Promise.all([
+    rm(join(stateDir, "mcp-selection.json"), { force: true }),
+    rm(join(stateDir, "mcp-tokens"), { force: true, recursive: true })
+  ]);
+}
+
+// src/config.js
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -1462,9 +1539,9 @@ function validateConfig(envelope, serverURL) {
   }
   return JSON.parse(JSON.stringify(envelope));
 }
-function parseConfig(text) {
+function parseConfig(text2) {
   const errors = [];
-  const value = parse2(text, errors, { allowTrailingComma: true });
+  const value = parse2(text2, errors, { allowTrailingComma: true });
   if (errors.length || !object(value))
     throw new Error("opencode.jsonc \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0448\u0438\u0431\u043A\u0443; \u0444\u0430\u0439\u043B \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u0451\u043D");
   return value;
@@ -1476,76 +1553,103 @@ async function applyConfig({ configPath, stateDir, envelope, serverURL, previous
     throw new Error("\u0421\u0435\u0440\u0432\u0435\u0440 \u043F\u0440\u0438\u0441\u043B\u0430\u043B \u0431\u043E\u043B\u0435\u0435 \u0441\u0442\u0430\u0440\u0443\u044E \u0432\u0435\u0440\u0441\u0438\u044E \u043A\u043E\u043D\u0444\u0438\u0433\u0430");
   if (previous?.revision === clean.revision && previous.fingerprint !== fingerprint)
     throw new Error("\u0421\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u043A\u043E\u043D\u0444\u0438\u0433\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u043E\u0441\u044C \u0431\u0435\u0437 \u0443\u0432\u0435\u043B\u0438\u0447\u0435\u043D\u0438\u044F \u0432\u0435\u0440\u0441\u0438\u0438");
-  let text = await readFile2(configPath, "utf8");
-  const current = parseConfig(text);
+  let text2 = await readFile2(configPath, "utf8");
+  const current = parseConfig(text2);
   const source = clean.config.providers.corporate;
-  const provider = client === "kilo" ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey: `{file:${join(stateDir, "access-token")}}` }, models: source.models } : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey: `{file:${join(stateDir, "access-token")}}` } };
+  const provider = client === "kilo" ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey: `{file:${join2(stateDir, "access-token")}}` }, models: source.models } : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey: `{file:${join2(stateDir, "access-token")}}` } };
   const field = client === "kilo" ? "provider" : "providers";
   const changed = JSON.stringify(current[field]?.corporate) !== JSON.stringify(provider);
   if (changed) {
     const backup = `${configPath}.before-corporate.bak`;
     if (!await exists(backup))
-      await atomicWrite(backup, text);
-    text = applyEdits(text, modify(text, [field, "corporate"], provider, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-    parseConfig(text);
-    await atomicWrite(configPath, text);
+      await atomicWrite(backup, text2);
+    text2 = applyEdits(text2, modify(text2, [field, "corporate"], provider, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+    parseConfig(text2);
+    await atomicWrite(configPath, text2);
   }
   return { revision: clean.revision, fingerprint, changed, checkedAt: new Date().toISOString() };
 }
 async function removeProvider(configPath, client = "opencode") {
-  let text = await readFile2(configPath, "utf8");
-  const original = text;
-  const current = parseConfig(text);
+  let text2 = await readFile2(configPath, "utf8");
+  const original = text2;
+  const current = parseConfig(text2);
   const field = client === "kilo" ? "provider" : "providers";
   if (object(current[field])) {
     const count = Object.keys(current[field]).length;
     if (Object.hasOwn(current[field], "corporate") || count === 0) {
       const path = count <= 1 ? [field] : [field, "corporate"];
-      text = applyEdits(text, modify(text, path, undefined, {}));
+      text2 = applyEdits(text2, modify(text2, path, undefined, {}));
     }
   }
   if (client === "kilo") {
     for (const key of ["model", "small_model", "subagent_model"]) {
       if (typeof current[key] === "string" && current[key].startsWith("corporate/"))
-        text = applyEdits(text, modify(text, [key], undefined, {}));
+        text2 = applyEdits(text2, modify(text2, [key], undefined, {}));
     }
   }
-  if (text === original)
+  if (text2 === original)
     return;
-  parseConfig(text);
-  await atomicWrite(configPath, text);
+  parseConfig(text2);
+  await atomicWrite(configPath, text2);
 }
 async function syncKiloMCP(configPath, stateDir, configs) {
-  let text = await readFile2(configPath, "utf8");
-  const current = parseConfig(text);
+  let text2 = await readFile2(configPath, "utf8");
+  const current = parseConfig(text2);
   const existing = object(current.mcp) ? current.mcp : {};
   const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
-  const wanted = new Map(configs.map(({ name, config }) => [name, {
-    type: "remote",
-    url: config.url,
-    oauth: false,
-    headers: { Authorization: `Bearer {file:${join(stateDir, "mcp-tokens", name.slice(5))}}` }
-  }]));
+  const wanted = new Map(configs.map(({ name, config }) => {
+    if (!name.startsWith("corp_") || config.headers?.Authorization !== `Bearer {env:${mcpEnvName(stateDir, name.slice(5))}}`)
+      throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F MCP \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F");
+    return [name, { type: "remote", url: config.url, oauth: false, headers: { Authorization: config.headers.Authorization } }];
+  }));
   if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name))))
     return false;
   for (const name of managed)
     if (!wanted.has(name))
-      text = applyEdits(text, modify(text, ["mcp", name], undefined, {}));
+      text2 = applyEdits(text2, modify(text2, ["mcp", name], undefined, {}));
   for (const [name, config] of wanted)
-    text = applyEdits(text, modify(text, ["mcp", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-  if (!Object.keys(parseConfig(text).mcp ?? {}).length)
-    text = applyEdits(text, modify(text, ["mcp"], undefined, {}));
-  parseConfig(text);
+    text2 = applyEdits(text2, modify(text2, ["mcp", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  if (!Object.keys(parseConfig(text2).mcp ?? {}).length)
+    text2 = applyEdits(text2, modify(text2, ["mcp"], undefined, {}));
+  parseConfig(text2);
   const backup = `${configPath}.before-corporate.bak`;
   if (!await exists(backup))
     await atomicWrite(backup, await readFile2(configPath, "utf8"));
-  await atomicWrite(configPath, text);
+  await atomicWrite(configPath, text2);
+  return true;
+}
+async function syncOpenCodeMCP(configPath, stateDir, configs) {
+  let text2 = await readFile2(configPath, "utf8");
+  const current = parseConfig(text2);
+  const existing = object(current.mcp?.servers) ? current.mcp.servers : {};
+  const managed = Object.keys(existing).filter((name) => name.startsWith("corp_"));
+  const wanted = new Map(configs.map(({ name, config }) => {
+    if (!name.startsWith("corp_") || config.headers?.Authorization !== `Bearer {env:${mcpEnvName(stateDir, name.slice(5))}}`)
+      throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F MCP \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F");
+    return [name, { type: "remote", url: config.url, oauth: false, headers: { Authorization: config.headers.Authorization } }];
+  }));
+  if (managed.length === wanted.size && managed.every((name) => JSON.stringify(existing[name]) === JSON.stringify(wanted.get(name))))
+    return false;
+  for (const name of managed)
+    if (!wanted.has(name))
+      text2 = applyEdits(text2, modify(text2, ["mcp", "servers", name], undefined, {}));
+  for (const [name, config] of wanted)
+    text2 = applyEdits(text2, modify(text2, ["mcp", "servers", name], config, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  if (!Object.keys(parseConfig(text2).mcp?.servers ?? {}).length)
+    text2 = applyEdits(text2, modify(text2, ["mcp", "servers"], undefined, {}));
+  if (!Object.keys(parseConfig(text2).mcp ?? {}).length)
+    text2 = applyEdits(text2, modify(text2, ["mcp"], undefined, {}));
+  parseConfig(text2);
+  const backup = `${configPath}.before-corporate.bak`;
+  if (!await exists(backup))
+    await atomicWrite(backup, await readFile2(configPath, "utf8"));
+  await atomicWrite(configPath, text2);
   return true;
 }
 
 // src/skills.js
 import { mkdir as mkdir2, readFile as readFile3 } from "fs/promises";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 function validateCatalog(data) {
   if (!Array.isArray(data?.skills) || data.skills.length > 40)
     throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043A\u0430\u0442\u0430\u043B\u043E\u0433 skills");
@@ -1579,11 +1683,11 @@ async function installSkills({ ids, catalog, api, token, skillsDir, signal }) {
 name: ${skill.id}
 `))
       throw new Error("\u0418\u043C\u044F \u0432 SKILL.md \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442 \u0441 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u043E\u043C");
-    const directory = join2(skillsDir, skill.id);
+    const directory = join3(skillsDir, skill.id);
     if ((await exists(directory))?.isSymbolicLink())
       throw new Error("\u041E\u0442\u043A\u0430\u0437 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438 \u0447\u0435\u0440\u0435\u0437 \u0441\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u0443\u044E \u0441\u0441\u044B\u043B\u043A\u0443");
-    const target = join2(directory, "SKILL.md");
-    const marker = join2(directory, ".corporate-sha256");
+    const target = join3(directory, "SKILL.md");
+    const marker = join3(directory, ".corporate-sha256");
     if (await exists(target)) {
       const ownedHash = await readFile3(marker, "utf8").catch(() => "");
       if (digest(await readFile3(target, "utf8")) !== ownedHash)
@@ -1599,94 +1703,18 @@ name: ${skill.id}
   return selected.map((skill) => skill.id);
 }
 
-// src/mcp.js
-import { readFile as readFile4, rm, lstat as lstat2, readdir } from "fs/promises";
-import { join as join3 } from "path";
-var idPattern = /^[a-z][a-z0-9_-]{0,39}$/;
-var text = (value, max = 200) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
-function validateMCPCatalog(data, serverURL) {
-  if (!data || !Array.isArray(data.servers) || data.servers.length > 30)
-    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043A\u0430\u0442\u0430\u043B\u043E\u0433 MCP");
-  const ids = new Set;
-  return data.servers.map((entry) => {
-    if (!entry || !idPattern.test(entry.id) || ids.has(entry.id) || !text(entry.name, 100) || !text(entry.description) || entry.auth !== "personal_token")
-      throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C MCP");
-    ids.add(entry.id);
-    const url = trustedURL(entry.url);
-    if (new URL(url).origin !== new URL(serverURL).origin || new URL(url).pathname !== `/mcp/${entry.id}`)
-      throw new Error("MCP \u0434\u043E\u043B\u0436\u0435\u043D \u043D\u0430\u0445\u043E\u0434\u0438\u0442\u044C\u0441\u044F \u043D\u0430 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u043C \u0441\u0435\u0440\u0432\u0435\u0440\u0435");
-    return { id: entry.id, name: entry.name, description: entry.description, url, auth: entry.auth };
-  });
-}
-function validateSelection(ids, catalog) {
-  if (!Array.isArray(ids) || ids.length > catalog.length || new Set(ids).size !== ids.length || ids.some((id) => !catalog.some((entry) => entry.id === id)))
-    throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D MCP \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
-  return ids;
-}
-async function readMCPState(stateDir, catalog) {
-  let selected;
-  try {
-    selected = JSON.parse(await readFile4(join3(stateDir, "mcp-selection.json"), "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return [];
-    throw error;
-  }
-  if (!Array.isArray(selected))
-    return [];
-  const allowed = selected.filter((id) => catalog.some((entry) => entry.id === id));
-  const configurations = [];
-  for (const id of allowed) {
-    const entry = catalog.find((item) => item.id === id);
-    let token;
-    try {
-      const path = join3(stateDir, "mcp-tokens", id);
-      if (!(await lstat2(path)).isFile())
-        continue;
-      token = await readFile4(path, "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw error;
-    }
-    if (!token || token.length > 512 || /[\r\n]/.test(token))
-      continue;
-    configurations.push({ name: `corp_${id}`, config: { type: "remote", url: entry.url, oauth: false, headers: { Authorization: `Bearer ${token}` } } });
-  }
-  return configurations;
-}
-async function saveMCPSelection(stateDir, ids, catalog, tokens) {
-  validateSelection(ids, catalog);
-  for (const id of ids) {
-    const token = tokens.get(id);
-    if (token !== undefined) {
-      if (!text(token, 512) || /[\r\n]/.test(token))
-        throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043B\u0438\u0447\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D MCP");
-      await atomicWrite(join3(stateDir, "mcp-tokens", id), token);
-    }
-  }
-  await atomicWrite(join3(stateDir, "mcp-selection.json"), JSON.stringify(ids));
-  const tokenDir = join3(stateDir, "mcp-tokens");
-  for (const name of await readdir(tokenDir).catch((error) => {
-    if (error.code === "ENOENT")
-      return [];
-    throw error;
-  })) {
-    if (!ids.includes(name))
-      await rm(join3(tokenDir, name), { force: true });
-  }
-  return readMCPState(stateDir, catalog);
-}
-async function clearMCP(stateDir) {
-  await Promise.all([
-    rm(join3(stateDir, "mcp-selection.json"), { force: true }),
-    rm(join3(stateDir, "mcp-tokens"), { force: true, recursive: true })
-  ]);
-}
-
 // src/secret-page.js
 import { createServer } from "http";
-async function captureSecret(title, { timeoutMs = 300000 } = {}) {
+var maxToken = 512;
+function page(items, action) {
+  const fields = items.map((item, index) => `<section class="system"><div class="system-head"><span class="number">${String(index + 1).padStart(2, "0")}</span><div><h2>${escapeHTML(item.name)}</h2><p>${escapeHTML(item.description)}</p></div></div><label for="token-${index}">\u041B\u0438\u0447\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D</label><input id="token-${index}" name="token:${escapeHTML(item.id)}" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="${maxToken}" placeholder="\u0412\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0442\u043E\u043A\u0435\u043D \u0434\u043B\u044F ${escapeHTML(item.name)}" required></section>`).join("");
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 MCP</title><style>
+  :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 90% 0%,#d7ebe8 0,transparent 38%),#f3f6f7}main{width:min(720px,calc(100% - 32px));margin:56px auto 72px}.brand{display:flex;align-items:center;gap:12px;color:#264e54;font-size:13px;font-weight:750;letter-spacing:.11em;text-transform:uppercase}.mark{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#15766d;color:white;font-size:21px;font-weight:700;letter-spacing:0}.panel{margin-top:22px;padding:clamp(24px,5vw,44px);background:#fff;border:1px solid #e0e8e9;border-radius:24px;box-shadow:0 20px 60px #1c434b12}h1{margin:0;font-size:clamp(28px,4vw,38px);line-height:1.15;letter-spacing:-.035em}.lead{margin:15px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}.notice{display:flex;gap:12px;margin:26px 0 8px;padding:15px 17px;background:#ecf8f5;border:1px solid #cce8e1;border-radius:13px;color:#275f57;font-size:14px;line-height:1.45}.notice b{font-size:18px;line-height:1}.system{padding:25px 0;border-bottom:1px solid #e9eef0}.system-head{display:flex;gap:16px;align-items:flex-start}.number{display:grid;place-items:center;flex:none;width:35px;height:35px;border-radius:10px;background:#eaf1f2;color:#4b7278;font-size:12px;font-weight:750}.system h2{margin:1px 0 5px;font-size:19px;letter-spacing:-.015em}.system p{margin:0;color:#64747e;font-size:14px;line-height:1.45}.system label{display:block;margin:20px 0 8px;color:#344a54;font-size:13px;font-weight:700}.system input{display:block;width:100%;height:48px;padding:0 14px;border:1px solid #bdcdd1;border-radius:10px;background:#fbfdfd;color:#17212b;font:inherit;outline:none;transition:border-color .15s,box-shadow .15s}.system input:focus{border-color:#15766d;box-shadow:0 0 0 4px #15766d20}.system input::placeholder{color:#9ba9ae}.footer{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:28px}.footnote{max-width:350px;color:#667780;font-size:13px;line-height:1.45}button{border:0;border-radius:11px;padding:14px 23px;background:#126d64;color:#fff;font:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 6px 16px #126d642d}button:hover{background:#0d5a52}button:focus-visible{outline:3px solid #71cabe;outline-offset:3px}@media(max-width:600px){main{margin:24px auto 40px}.panel{border-radius:18px}.footer{align-items:stretch;flex-direction:column-reverse}button{width:100%}}
+  </style></head><body><main><div class="brand"><span class="mark">\u2197</span> \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="panel"><h1>\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0441\u0438\u0441\u0442\u0435\u043C\u044B</h1><p class="lead">\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0434\u043B\u044F ${items.length} ${items.length % 10 === 1 && items.length % 100 !== 11 ? "\u0441\u0438\u0441\u0442\u0435\u043C\u044B" : "\u0441\u0438\u0441\u0442\u0435\u043C"}. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442 MCP \u0432 \u0442\u0435\u043A\u0443\u0449\u0435\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435 OpenCode \u0438\u043B\u0438 Kilo.</p><div class="notice"><b>\u25C8</b><span>\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u044E\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C\u0443 \u043F\u043B\u0430\u0433\u0438\u043D\u0443. \u041E\u043D\u0438 \u043D\u0435 \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0432 \u0447\u0430\u0442\u0435 \u0438 \u043D\u0435 \u0431\u0443\u0434\u0443\u0442 \u0437\u0430\u043F\u0438\u0441\u0430\u043D\u044B \u0432 \u0444\u0430\u0439\u043B \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438.</span></div><form method="post" action="${action}" autocomplete="off">${fields}<div class="footer"><span class="footnote">\u041F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u043A\u0430 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F \u043F\u043E\u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0432\u0432\u0435\u0441\u0442\u0438 \u0442\u043E\u043A\u0435\u043D\u044B \u0441\u043D\u043E\u0432\u0430.</span><button type="submit">\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C ${items.length} MCP</button></div></form></div></main></body></html>`;
+}
+async function captureSecrets(items, { timeoutMs = 300000 } = {}) {
+  if (!Array.isArray(items) || !items.length || items.length > 30 || new Set(items.map((item) => item.id)).size !== items.length || items.some((item) => !/^[a-z][a-z0-9_-]{0,39}$/.test(item.id)))
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A MCP \u0434\u043B\u044F \u0432\u0432\u043E\u0434\u0430 \u0442\u043E\u043A\u0435\u043D\u043E\u0432");
   const nonce = random();
   let settled = false;
   let accept, reject;
@@ -1694,17 +1722,16 @@ async function captureSecret(title, { timeoutMs = 300000 } = {}) {
     accept = yes;
     reject = no;
   });
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     const path = `/secret/${nonce}`;
-    const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
+    const headers = { "Cache-Control": "no-store", Pragma: "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
     if (request.url !== path || request.headers.host !== `127.0.0.1:${server.address().port}`) {
-      response.writeHead(404).end();
+      response.writeHead(404, headers).end();
       return;
     }
     if (request.method === "GET") {
-      response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" });
-      response.end(`<html lang="ru"><meta charset="utf-8"><title>${escapeHTML(title)}</title><style>body{font:16px system-ui;max-width:32rem;margin:4rem auto;padding:1rem}input,button{font:inherit;padding:.6rem}input{width:100%;box-sizing:border-box;margin:1rem 0}</style><h1>${escapeHTML(title)}</h1><p>\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u043E\u043A\u0435\u043D. \u041E\u043D \u0431\u0443\u0434\u0435\u0442 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D \u0442\u043E\u043B\u044C\u043A\u043E \u043D\u0430 \u044D\u0442\u043E\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435 \u0438 \u043D\u0435 \u043F\u043E\u043F\u0430\u0434\u0451\u0442 \u0432 \u0447\u0430\u0442. \u0414\u043B\u044F \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u044D\u043C\u0443\u043B\u044F\u0442\u043E\u0440\u0430 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435 \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u0435\u0441\u0442\u043E\u0432\u044B\u0439 \u0442\u043E\u043A\u0435\u043D \u0438\u0437 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u044F MCP, \u043D\u0435 \u043D\u0430\u0441\u0442\u043E\u044F\u0449\u0438\u0439 Jira/Confluence PAT.</p><form method="post" action="${path}"><input type="password" name="token" autocomplete="off" required autofocus><button>\u041F\u0435\u0440\u0435\u0434\u0430\u0442\u044C \u043F\u043B\u0430\u0433\u0438\u043D\u0443</button></form>`);
+      response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(page(items, path));
       return;
     }
     if (request.method !== "POST" || request.headers.origin !== origin || request.headers["content-type"]?.split(";")[0] !== "application/x-www-form-urlencoded") {
@@ -1712,24 +1739,32 @@ async function captureSecret(title, { timeoutMs = 300000 } = {}) {
       return;
     }
     let input = "";
-    request.on("data", (chunk) => {
-      input += chunk;
-      if (input.length > 2048)
-        request.destroy();
-    });
-    request.on("end", () => {
-      const token = new URLSearchParams(input).get("token");
-      if (!token || token.length > 512 || /[\r\n]/.test(token)) {
-        response.writeHead(400, headers).end("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D");
-        return;
+    try {
+      for await (const chunk of request) {
+        input += chunk;
+        if (input.length > 65536) {
+          response.writeHead(413, headers).end();
+          return;
+        }
       }
-      response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end("<html lang=ru><meta charset=utf-8><p>\u0422\u043E\u043A\u0435\u043D \u043F\u0435\u0440\u0435\u0434\u0430\u043D \u043F\u043B\u0430\u0433\u0438\u043D\u0443. \u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</p>");
-      if (!settled) {
-        settled = true;
-        accept(token);
-        server.close();
-      }
-    });
+    } catch {
+      if (!response.writableEnded)
+        response.writeHead(400, headers).end();
+      return;
+    }
+    const form = new URLSearchParams(input);
+    const expected = new Set(items.map((item) => `token:${item.id}`));
+    if ([...form.keys()].some((key) => !expected.has(key)) || [...expected].some((key) => form.getAll(key).length !== 1 || !form.get(key) || form.get(key).length > maxToken || /[\r\n]/.test(form.get(key)))) {
+      response.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }).end("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0443.");
+      return;
+    }
+    const tokens = new Map(items.map((item) => [item.id, form.get(`token:${item.id}`)]));
+    response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><html lang=ru><meta charset=utf-8><title>MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0430\u044E\u0442\u0441\u044F</title><style>body{font:16px system-ui;max-width:32rem;margin:12vh auto;padding:2rem;background:#f3f6f7;color:#17212b}main{padding:2rem;background:white;border-radius:18px}h1{font-size:25px}</style><main><h1>\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u043D\u044B</h1><p>\u041F\u043B\u0430\u0433\u0438\u043D \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 MCP. \u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</p></main></html>");
+    if (!settled) {
+      settled = true;
+      accept(tokens);
+      server.close();
+    }
   });
   await new Promise((resolve, fail) => {
     server.once("error", fail);
@@ -1738,7 +1773,7 @@ async function captureSecret(title, { timeoutMs = 300000 } = {}) {
   const timer = setTimeout(() => {
     if (!settled) {
       settled = true;
-      reject(new Error("\u0412\u0440\u0435\u043C\u044F \u0432\u0432\u043E\u0434\u0430 \u0442\u043E\u043A\u0435\u043D\u0430 \u0438\u0441\u0442\u0435\u043A\u043B\u043E"));
+      reject(new Error("\u0412\u0440\u0435\u043C\u044F \u0432\u0432\u043E\u0434\u0430 \u0442\u043E\u043A\u0435\u043D\u043E\u0432 \u0438\u0441\u0442\u0435\u043A\u043B\u043E"));
       server.close();
     }
   }, timeoutMs);
@@ -1747,18 +1782,18 @@ async function captureSecret(title, { timeoutMs = 300000 } = {}) {
   return { url: `http://127.0.0.1:${server.address().port}/secret/${nonce}`, result, cancel: () => {
     if (!settled) {
       settled = true;
-      reject(new Error("\u0412\u0432\u043E\u0434 \u0442\u043E\u043A\u0435\u043D\u0430 \u043E\u0442\u043C\u0435\u043D\u0451\u043D"));
+      reject(new Error("\u0412\u0432\u043E\u0434 \u0442\u043E\u043A\u0435\u043D\u043E\u0432 \u043E\u0442\u043C\u0435\u043D\u0451\u043D"));
       server.close();
     }
   } };
 }
 
 // src/login.js
-import { createHash as createHash2, timingSafeEqual } from "crypto";
+import { createHash as createHash3, timingSafeEqual } from "crypto";
 async function startLogin(api, { timeoutMs = 300000 } = {}) {
   const state = random();
   const verifier = random();
-  const challenge = createHash2("sha256").update(verifier).digest("base64url");
+  const challenge = createHash3("sha256").update(verifier).digest("base64url");
   let resolve, reject, consumed = false, timer;
   const controller = new AbortController;
   const result = new Promise((yes, no) => {
@@ -1778,10 +1813,10 @@ async function startLogin(api, { timeoutMs = 300000 } = {}) {
       try {
         const token = await api.request("/oauth/token", { method: "POST", body: { code: url.searchParams.get("code"), verifier, redirectURI }, signal: controller.signal });
         resolve(token.data);
-        return new Response("\u0412\u0445\u043E\u0434 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D. \u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 OpenCode.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
+        return new Response("\u0412\u0445\u043E\u0434 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D. \u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
       } catch (error) {
         reject(error);
-        return new Response("\u0412\u0445\u043E\u0434 \u043D\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /login \u0432 OpenCode.", { status: 400 });
+        return new Response("\u0412\u0445\u043E\u0434 \u043D\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0432\u0445\u043E\u0434 \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0438.", { status: 400 });
       } finally {
         clearTimeout(timer);
         setTimeout(() => server.stop(true), 100).unref();
@@ -1907,6 +1942,10 @@ class CorporateRuntime {
     this.mcpReloaders = new Set;
   }
   async start() {
+    await Promise.all([
+      rm2(join4(this.options.stateDir, "mcp-selection.json"), { force: true }),
+      rm2(join4(this.options.stateDir, "mcp-tokens"), { force: true, recursive: true })
+    ]);
     this.credential = await readJSON(join4(this.options.stateDir, "credential.json"));
     if (!validCredential(this.credential) || this.credential.expiresAt <= Date.now())
       this.credential = null;
@@ -2061,16 +2100,36 @@ class CorporateRuntime {
       }
     }).finally(() => this.jobs.delete(promise));
   }
+  async autoLogin() {
+    if (this.authenticated() || this.abort.signal.aborted || process.env.CORP_NO_BROWSER === "1")
+      return false;
+    try {
+      await this.login(null);
+      return true;
+    } catch (error) {
+      await this.notice(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u0432\u0445\u043E\u0434 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438: ${error.message}. \u0412\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login.`, "warning");
+      return false;
+    }
+  }
   async login(sessionID, reload = async () => {}) {
-    if (this.loginFlow || this.loginPending)
-      throw new Error("\u0412\u0445\u043E\u0434 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435");
-    this.loginPending = true;
+    if (this.loginFlow) {
+      if (sessionID) {
+        await this.open(this.loginFlow.url);
+        await this.bridge.message(sessionID, "\u0412\u0445\u043E\u0434 \u043E\u0442\u043A\u0440\u044B\u0442", "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u0432\u0445\u043E\u0434\u0430 \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u043E \u043E\u0442\u043A\u0440\u044B\u0442\u0430 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435. \u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u0435 \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u044E \u0442\u0430\u043C.");
+      }
+      return;
+    }
+    if (this.loginPending) {
+      await this.loginPending.catch(() => {});
+      return this.login(sessionID, reload);
+    }
+    this.loginPending = startLogin(this.api);
     const generation = this.authGeneration;
     let flow;
     try {
-      flow = await startLogin(this.api);
+      flow = await this.loginPending;
     } finally {
-      this.loginPending = false;
+      this.loginPending = null;
     }
     if (generation !== this.authGeneration || this.abort.signal.aborted) {
       flow.cancel();
@@ -2078,20 +2137,31 @@ class CorporateRuntime {
     }
     this.loginFlow = flow;
     const clientName = this.options.client === "kilo" ? "Kilo" : "OpenCode";
-    const form = await this.bridge.form(sessionID, `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, [
+    const form = sessionID ? await this.bridge.form(sessionID, `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, [
       { type: "external", key: "login", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0432\u0445\u043E\u0434\u0430", url: flow.url },
       { type: "string", key: "waiting", title: `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, description: `\u0412 \u043E\u0442\u043A\u0440\u044B\u0432\u0448\u0435\u043C\u0441\u044F \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0442\u0435\u0441\u0442\u043E\u0432\u0443\u044E \u0443\u0447\u0451\u0442\u043D\u0443\u044E \u0437\u0430\u043F\u0438\u0441\u044C. \u041F\u0430\u0440\u043E\u043B\u044C \u043D\u0435 \u043D\u0443\u0436\u0435\u043D. \u0415\u0441\u043B\u0438 \u0431\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u043B\u0441\u044F, \u0441\u043A\u043E\u043F\u0438\u0440\u0443\u0439\u0442\u0435 \u0430\u0434\u0440\u0435\u0441: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "\u041E\u0436\u0438\u0434\u0430\u044E \u0432\u0445\u043E\u0434\u0430 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435" }] }
     ]).catch((error) => {
       flow.cancel();
       this.loginFlow = null;
       throw error;
-    });
-    this.open(flow.url).catch(() => this.notice(`\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0441\u0441\u044B\u043B\u043A\u0443 \u0432\u0445\u043E\u0434\u0430 \u0432 \u0444\u043E\u0440\u043C\u0435 ${clientName}`, "info"));
-    const cancellation = new AbortController;
-    this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => {
-      if (answer === null)
+    }) : null;
+    try {
+      await this.open(flow.url);
+    } catch {
+      if (form)
+        await this.notice(`\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0441\u0441\u044B\u043B\u043A\u0443 \u0432\u0445\u043E\u0434\u0430 \u0432 \u0444\u043E\u0440\u043C\u0435 ${clientName}`, "info");
+      else {
         flow.cancel();
-    }).catch(() => {});
+        this.loginFlow = null;
+        throw new Error("\u0431\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u043B\u0441\u044F");
+      }
+    }
+    const cancellation = new AbortController;
+    if (form)
+      this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => {
+        if (answer === null)
+          flow.cancel();
+      }).catch(() => {});
     this.track((async () => {
       try {
         const result = await flow.result;
@@ -2111,12 +2181,14 @@ class CorporateRuntime {
           await this.persistState();
         });
         await reload();
-        await this.bridge.message(sessionID, "\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", `${result.user.name}. \u041A\u043E\u043D\u0444\u0438\u0433 \u0432\u0435\u0440\u0441\u0438\u0438 ${this.state.revision} \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B /refresh_config \u0438 /skills_load.`);
+        if (form)
+          await this.bridge.message(sessionID, "\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", `${result.user.name}. \u041A\u043E\u043D\u0444\u0438\u0433 \u0432\u0435\u0440\u0441\u0438\u0438 ${this.state.revision} \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B /refresh_config \u0438 /skills_load.`);
         await this.notice("\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D; \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433 \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D", "success");
         await this.pollLoad();
       } finally {
         cancellation.abort();
-        await this.bridge.cancel(sessionID, form.id);
+        if (form)
+          await this.bridge.cancel(sessionID, form.id);
         this.loginFlow = null;
       }
     })(), sessionID);
@@ -2188,24 +2260,25 @@ class CorporateRuntime {
         if (answer === null)
           return;
         const ids = answer.mcps ?? [];
-        const tokens = new Map;
-        for (const id of ids) {
+        const requested = ids.map((id) => {
           const item = catalog.find((entry) => entry.id === id);
           if (!item)
             throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D MCP \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
-          if (selected.includes(id))
-            continue;
-          const page = await captureSecret(`\u041B\u0438\u0447\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D \u0434\u043B\u044F ${item.name}`);
-          const cancel = () => page.cancel();
+          return item;
+        }).filter((item) => !selected.includes(item.id));
+        let tokens = new Map;
+        if (requested.length) {
+          const page2 = await captureSecrets(requested);
+          const cancel = () => page2.cancel();
           signal.addEventListener("abort", cancel, { once: true });
           let notice;
           try {
-            notice = await this.bridge.form(sessionID, `\u0422\u043E\u043A\u0435\u043D ${item.name}`, [{ type: "external", key: "token", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0437\u0430\u0449\u0438\u0449\u0451\u043D\u043D\u0443\u044E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443", url: page.url }]);
-            await this.open(page.url).catch(() => {});
-            tokens.set(id, await page.result);
+            notice = await this.bridge.form(sessionID, "\u0422\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 MCP", [{ type: "external", key: "tokens", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443 \u0434\u043B\u044F \u0442\u043E\u043A\u0435\u043D\u043E\u0432", url: page2.url }]);
+            await this.open(page2.url).catch(() => {});
+            tokens = await page2.result;
           } finally {
             signal.removeEventListener("abort", cancel);
-            page.cancel();
+            page2.cancel();
             if (notice)
               await this.bridge.cancel(sessionID, notice.id);
           }
@@ -2250,6 +2323,7 @@ class CorporateRuntime {
     clearInterval(this.loadTimer);
     this.abort.abort();
     this.loginFlow?.cancel();
+    clearMCPEnv(this.options.stateDir);
   }
 }
 function optionsFromEnv(env = process.env, settings = {}) {
@@ -2369,12 +2443,24 @@ class KiloBridge {
 }
 
 // src/kilo-control.js
-var key = Symbol.for("company.kilo.corporate.control.v1");
+var key = Symbol.for("company.kilo.corporate.control.v3");
+var legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
 var commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
 async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
-  const registry = globalThis[key] ??= new Map;
   const name = `${options.configPath}|${options.serverURL}`;
+  for (const legacyKey of legacyKeys) {
+    const legacy = globalThis[legacyKey];
+    if (!legacy?.has(name))
+      continue;
+    const previous = await legacy.get(name).catch(() => null);
+    legacy.delete(name);
+    previous?.runtime.dispose();
+    previous?.bridge.dispose();
+    previous?.server.closeAllConnections();
+    previous?.server.close();
+  }
+  const registry = globalThis[key] ??= new Map;
   if (registry.has(name))
     return registry.get(name);
   const ready = boot(options, adapters).catch((error) => {
@@ -2475,6 +2561,7 @@ ${lights[status.load.level]} ${status.load.message}`);
     });
     await atomicWrite(ownFile, state);
     await atomicWrite(join5(options.stateDir, "control.json"), state);
+    runtime.autoLogin();
     return { runtime, server, bridge };
   } catch (error) {
     server.close();
@@ -2485,7 +2572,7 @@ ${lights[status.load.level]} ${status.load.message}`);
 }
 
 // src/kilo-workflows.js
-import { readFile as readFile5 } from "fs/promises";
+import { readFile as readFile4 } from "fs/promises";
 import { dirname as dirname2, join as join6 } from "path";
 var marker = "# opencode_corp managed Kilo workflow";
 var legacyMarker = "<!-- opencode_corp managed Kilo workflow -->";
@@ -2507,8 +2594,8 @@ const name = process.argv[2];
 if (!names.has(name)) throw new Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430");
 const directory = dirname(fileURLToPath(import.meta.url));
 const files = (await readdir(directory)).filter((file) => /^control-\d+\.json$/.test(file));
-files.sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
-files.push("control.json");
+files.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
+files.unshift("control.json");
 
 async function active(file) {
   try {
@@ -2556,7 +2643,7 @@ async function installKiloWorkflows(options) {
         conflicts.push(name);
         continue;
       }
-      const content2 = await readFile5(file, "utf8");
+      const content2 = await readFile4(file, "utf8");
       if (!content2.includes(marker) && !content2.includes(legacyMarker)) {
         conflicts.push(name);
         continue;
@@ -2584,7 +2671,7 @@ var rpc = {
   methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } }
 };
-var registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
+var registryKey = Symbol.for("company.opencode.corporate.runtime.v4");
 var plugin_default = {
   id: "company-corporate",
   async server(_context, settings) {
@@ -2601,7 +2688,7 @@ var plugin_default = {
     const key2 = `${options.configPath}|${options.serverURL}`;
     let entry = registry.get(key2);
     if (!entry) {
-      const runtime2 = new CorporateRuntime(options);
+      const runtime2 = new CorporateRuntime(options, { syncMCP: (configs) => syncOpenCodeMCP(options.configPath, options.stateDir, configs) });
       entry = { runtime: runtime2, ready: runtime2.start(), refs: 0 };
       registry.set(key2, entry);
     }
@@ -2615,8 +2702,11 @@ var plugin_default = {
         if (name.startsWith("corp_"))
           editor.remove(name);
       if (runtime.authenticated())
-        for (const { name, config } of runtime.mcpConfigs)
-          editor.set(name, config);
+        for (const { name, config } of runtime.mcpConfigs) {
+          const value = process.env[mcpEnvName(options.stateDir, name.slice(5))];
+          if (value)
+            editor.set(name, { ...config, headers: { Authorization: `Bearer ${value}` } });
+        }
     });
     const registration = await context.rpc.register(rpc, { status: async () => runtime.status() });
     const listener = (event) => registration.events.emit("notice", event);
@@ -2662,6 +2752,10 @@ ${status.config.lastError}` : ""}`);
           }
         } });
     });
+    if (!entry.autoLoginStarted) {
+      entry.autoLoginStarted = true;
+      runtime.autoLogin();
+    }
     return () => {
       runtime.mcpReloaders.delete(reloadMCP);
       mcpRegistration.dispose?.();

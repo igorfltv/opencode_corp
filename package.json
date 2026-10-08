@@ -9,6 +9,7 @@
     "bundle": "bun build src/plugin.js --target=bun --outfile server.js && bun build src/tui.js --target=bun --outfile tui.js",
     "test": "bun test tests",
     "test:integration": "bun run scripts/integration.mjs",
+    "test:auto-login": "bun run scripts/integration-auto-login.mjs",
     "test:kilo": "bun run scripts/integration-kilo.mjs",
     "test:github": "bun run scripts/integration-github.mjs",
     "demo": "bun run scripts/demo.mjs",

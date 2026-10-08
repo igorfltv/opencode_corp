@@ -1,9 +1,12 @@
-import { readFile, rm, lstat, readdir } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicWrite, trustedURL } from "./io.js";
+import { createHash } from "node:crypto";
+import { trustedURL } from "./io.js";
 
 const idPattern = /^[a-z][a-z0-9_-]{0,39}$/;
 const text = (value, max = 200) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
+const validToken = (value) => text(value, 512) && !/[\r\n]/.test(value);
+
 export function validateMCPCatalog(data, serverURL) {
   if (!data || !Array.isArray(data.servers) || data.servers.length > 30) throw new Error("Некорректный каталог MCP");
   const ids = new Set();
@@ -21,46 +24,47 @@ export function validateSelection(ids, catalog) {
   return ids;
 }
 
-export async function readMCPState(stateDir, catalog) {
-  let selected;
-  try { selected = JSON.parse(await readFile(join(stateDir, "mcp-selection.json"), "utf8")); }
-  catch (error) { if (error.code === "ENOENT") return []; throw error; }
-  if (!Array.isArray(selected)) return [];
-  const allowed = selected.filter((id) => catalog.some((entry) => entry.id === id));
-  const configurations = [];
-  for (const id of allowed) {
-    const entry = catalog.find((item) => item.id === id);
-    let token;
-    try {
-      const path = join(stateDir, "mcp-tokens", id);
-      if (!(await lstat(path)).isFile()) continue;
-      token = await readFile(path, "utf8");
-    }
-    catch (error) { if (error.code === "ENOENT") continue; throw error; }
-    if (!token || token.length > 512 || /[\r\n]/.test(token)) continue;
-    configurations.push({ name: `corp_${id}`, config: { type: "remote", url: entry.url, oauth: false, headers: { Authorization: `Bearer ${token}` } } });
-  }
-  return configurations;
+// Profile-specific names prevent two local profiles from sharing a credential.
+// The ID is encoded without lossy dash/underscore normalization.
+export function mcpEnvName(stateDir, id) {
+  if (!idPattern.test(id)) throw new Error("Некорректный ID MCP");
+  const profile = createHash("sha256").update(stateDir).digest("hex").slice(0, 12).toUpperCase();
+  return `CORP_MCP_${profile}_${Buffer.from(id).toString("hex").toUpperCase()}_TOKEN`;
 }
 
-export async function saveMCPSelection(stateDir, ids, catalog, tokens) {
+function configFor(stateDir, entry) {
+  const env = mcpEnvName(stateDir, entry.id);
+  return { name: `corp_${entry.id}`, config: {
+    type: "remote", url: entry.url, oauth: false,
+    headers: { Authorization: `Bearer {env:${env}}` },
+  } };
+}
+
+export function readMCPState(stateDir, catalog) {
+  return catalog.filter((entry) => validToken(process.env[mcpEnvName(stateDir, entry.id)])).map((entry) => configFor(stateDir, entry));
+}
+
+export function saveMCPSelection(stateDir, ids, catalog, tokens) {
   validateSelection(ids, catalog);
+  if (!(tokens instanceof Map) || [...tokens.keys()].some((id) => !ids.includes(id))) throw new Error("Некорректный набор токенов MCP");
+  // Validate every input before mutating the process environment.
   for (const id of ids) {
-    const token = tokens.get(id);
-    if (token !== undefined) {
-      if (!text(token, 512) || /[\r\n]/.test(token)) throw new Error("Некорректный личный токен MCP");
-      await atomicWrite(join(stateDir, "mcp-tokens", id), token);
-    }
+    const value = tokens.has(id) ? tokens.get(id) : process.env[mcpEnvName(stateDir, id)];
+    if (!validToken(value)) throw new Error(`Требуется личный токен MCP: ${id}`);
   }
-  await atomicWrite(join(stateDir, "mcp-selection.json"), JSON.stringify(ids));
-  const tokenDir = join(stateDir, "mcp-tokens");
-  for (const name of await readdir(tokenDir).catch((error) => { if (error.code === "ENOENT") return []; throw error; })) {
-    if (!ids.includes(name)) await rm(join(tokenDir, name), { force: true });
-  }
-  return readMCPState(stateDir, catalog);
+  for (const id of ids) if (tokens.has(id)) process.env[mcpEnvName(stateDir, id)] = tokens.get(id);
+  for (const entry of catalog) if (!ids.includes(entry.id)) delete process.env[mcpEnvName(stateDir, entry.id)];
+  return ids.map((id) => configFor(stateDir, catalog.find((entry) => entry.id === id)));
+}
+
+export function clearMCPEnv(stateDir) {
+  const profile = createHash("sha256").update(stateDir).digest("hex").slice(0, 12).toUpperCase();
+  for (const key of Object.keys(process.env)) if (key.startsWith(`CORP_MCP_${profile}_`) && key.endsWith("_TOKEN")) delete process.env[key];
 }
 
 export async function clearMCP(stateDir) {
+  clearMCPEnv(stateDir);
+  // Remove token files left by releases before the memory-only flow.
   await Promise.all([
     rm(join(stateDir, "mcp-selection.json"), { force: true }),
     rm(join(stateDir, "mcp-tokens"), { force: true, recursive: true }),

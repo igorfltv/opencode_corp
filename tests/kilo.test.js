@@ -7,6 +7,7 @@ import { CorporateRuntime, optionsFromEnv } from "../src/runtime.js";
 import { KiloBridge } from "../src/kilo-bridge.js";
 import { startKiloControl } from "../src/kilo-control.js";
 import { parseConfig, syncKiloMCP } from "../src/config.js";
+import { mcpEnvName } from "../src/mcp.js";
 import { atomicWrite } from "../src/io.js";
 import { approveBrowser } from "./helpers.js";
 import tui from "../src/tui.js";
@@ -38,6 +39,9 @@ test("Kilo browser flow applies provider, skills and MCP without exposing tokens
     const login = await eventually(() => pages.find((url) => url.includes("/oauth/authorize")));
     expect((await fetch(await approveBrowser(login))).status).toBe(200);
     await eventually(async () => parseConfig(await readFile(options.configPath, "utf8")).provider?.corporate);
+    const openedBefore = pages.length;
+    expect(await runtime.autoLogin()).toBe(false);
+    expect(pages).toHaveLength(openedBefore);
     const config = parseConfig(await readFile(options.configPath, "utf8"));
     expect(config.provider.personal.name).toBe("Personal");
     expect(config.provider.corporate.npm).toBe("@ai-sdk/openai-compatible");
@@ -52,23 +56,27 @@ test("Kilo browser flow applies provider, skills and MCP without exposing tokens
     const mcpSelection = await eventually(() => pages.find((url) => url.includes("/form/") && url !== selection));
     expect((await fetch(mcpSelection, { method: "POST", headers: { Origin: new URL(mcpSelection).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "choice=jira" })).status).toBe(200);
     const secret = await eventually(() => pages.find((url) => url.includes("/secret/")));
-    expect((await fetch(secret, { method: "POST", headers: { Origin: new URL(secret).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token=demo-jira-token" })).status).toBe(200);
+    expect((await fetch(secret, { method: "POST", headers: { Origin: new URL(secret).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token%3Ajira=demo-jira-token" })).status).toBe(200);
     await eventually(async () => Boolean(parseConfig(await readFile(options.configPath, "utf8")).mcp?.corp_jira));
     const text = await readFile(options.configPath, "utf8");
     expect(text).toContain("// preserve");
     expect(text).not.toContain("demo-jira-token");
+    expect(text).toContain(`{env:${mcpEnvName(options.stateDir, "jira")}}`);
+    expect(process.env[mcpEnvName(options.stateDir, "jira")]).toBe("demo-jira-token");
+    expect(await Bun.file(join(options.stateDir, "mcp-tokens/jira")).exists()).toBe(false);
     expect(messages.some((item) => item.title === "MCP настроены")).toBe(true);
     await runtime.logout();
     const clean = parseConfig(await readFile(options.configPath, "utf8"));
     expect(clean.provider).toEqual({ personal: { name: "Personal" } });
     expect(clean.mcp).toBeUndefined();
+    expect(process.env[mcpEnvName(options.stateDir, "jira")]).toBeUndefined();
   } finally {
     runtime.dispose(); bridge.dispose(); emulator.stop();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("Kilo TUI registers seven direct slash commands and requires login", async () => {
+test("Kilo TUI registers seven direct slash commands", async () => {
   const root = await mkdtemp(join(tmpdir(), "corporate-kilo-tui-"));
   const toasts = [];
   let commands, dispose;
@@ -80,12 +88,10 @@ test("Kilo TUI registers seven direct slash commands and requires login", async 
       lifecycle: { onDispose: (fn) => { dispose = fn; } },
     }, { profileDir: root, serverURL: "http://127.0.0.1:4310" });
     expect(commands.map((item) => item.slash.name)).toEqual(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
-    await commands.find((item) => item.slash.name === "corp_status").onSelect();
-    expect(toasts.at(-1).message).toContain("Сначала выполните /login");
   } finally { dispose?.(); await rm(root, { recursive: true, force: true }); }
 });
 
-test("Kilo VS Code control executes login and status through an authenticated loopback bridge", async () => {
+test("Kilo VS Code opens login on startup and lets /login reopen it", async () => {
   const root = await mkdtemp(join(tmpdir(), "corporate-kilo-control-"));
   const emulator = createEmulator({ port: 0 });
   const pages = [];
@@ -106,13 +112,25 @@ test("Kilo VS Code control executes login and status through an authenticated lo
     expect((await fetch(`${endpoint}/health`, { headers: { Authorization: `Bearer ${state.secret}` } })).status).toBe(200);
     expect((await request("corp_status", "wrong")).status).toBe(403);
     expect((await (await request("corp_status")).json()).message).toContain("Сначала выполните /login");
-    const login = request("login");
     const page = await eventually(() => pages.find((url) => url.includes("/oauth/authorize")));
+    const login = request("login");
+    await eventually(() => pages.filter((url) => url === page).length === 2);
     expect((await fetch(await approveBrowser(page))).status).toBe(200);
     const result = await (await login).json();
     expect(result.reload).toBe(true);
-    expect(result.message).toContain("Вход выполнен");
+    expect(result.message).toContain("Вход открыт");
+    await eventually(() => control.runtime.authenticated());
     expect((await (await request("corp_status")).json()).message).toContain("Engineering");
+    let menu;
+    const toasts = [];
+    await tui.tui({
+      command: { register: (callback) => { menu = callback(); return () => {}; } },
+      client: { instance: { reload: async () => ({}) } },
+      ui: { toast: (item) => toasts.push(item) },
+      lifecycle: { onDispose: () => {} },
+    }, { profileDir: root, serverURL: emulator.baseURL });
+    await menu.find((item) => item.slash.name === "corp_status").onSelect();
+    expect(toasts.at(-1).message).toContain("Engineering");
     expect((await (await request("logout")).json()).reload).toBe(true);
     expect((await (await request("corp_status")).json()).message).toContain("Сначала выполните /login");
   } finally {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, chmod, readFile } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import { createEmulator } from "../server/emulator.js";
 import { startLogin } from "../src/login.js";
 import { CorporateAPI } from "../src/api.js";
 import { applyConfig, syncKiloMCP } from "../src/config.js";
-import { saveMCPSelection, validateMCPCatalog } from "../src/mcp.js";
+import { saveMCPSelection, validateMCPCatalog, clearMCP, mcpEnvName } from "../src/mcp.js";
 import { atomicWrite, random } from "../src/io.js";
 import { installSkills } from "../src/skills.js";
 import { approveBrowser } from "../tests/helpers.js";
@@ -35,13 +35,23 @@ try {
   const catalog = validateMCPCatalog((await api.request("/api/mcps", { token: login.accessToken })).data, emulator.baseURL);
   const selection = await saveMCPSelection(stateDir, ["jira"], catalog, new Map([["jira", "demo-jira-token"]]));
   await syncKiloMCP(configPath, stateDir, selection);
+  assert.equal(JSON.parse(await Bun.file(configPath).text()).mcp.corp_jira.headers.Authorization, `Bearer {env:${mcpEnvName(stateDir, "jira")}}`);
+  const browserLog = join(directory, "browser-urls.log");
+  const browserBin = join(directory, "browser-bin");
+  await mkdir(browserBin);
+  for (const name of ["open", "xdg-open"]) {
+    const path = join(browserBin, name);
+    await writeFile(path, '#!/bin/sh\nprintf "%s\\n" "$1" >> "$CORP_BROWSER_URL_LOG"\n');
+    await chmod(path, 0o700);
+  }
   const password = random();
   child = spawn(process.env.KILO_BIN ?? "kilo", ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     cwd: project, stdio: ["ignore", "pipe", "pipe"], env: {
       ...process.env, KILO_CONFIG_DIR: profile, KILO_SERVER_PASSWORD: password, KILO_DISABLE_DEFAULT_PLUGINS: "1",
       XDG_CONFIG_HOME: join(directory, "config"), XDG_DATA_HOME: join(directory, "data"),
       XDG_CACHE_HOME: join(directory, "cache"), XDG_STATE_HOME: join(directory, "state"),
-      CORP_NO_BROWSER: "1", CORP_NO_NOTIFICATIONS: "1",
+      CORP_NO_BROWSER: "0", CORP_NO_NOTIFICATIONS: "1", CORP_BROWSER_URL_LOG: browserLog,
+      PATH: `${browserBin}:${process.env.PATH ?? ""}`,
       CORP_SERVER_URL: emulator.baseURL,
     },
   });
@@ -74,19 +84,32 @@ try {
   assert.deepEqual(await request("/config/warnings"), []);
   const providers = await request("/provider");
   assert(providers.all.some((item) => item.id === "corporate"));
-  const control = JSON.parse(await Bun.file(join(stateDir, "control.json")).text());
-  const status = await fetch(`http://127.0.0.1:${control.port}/command/corp_status`, { method: "POST", headers: { Authorization: `Bearer ${control.secret}` } });
-  assert.equal(status.status, 200);
-  assert((await status.json()).message.includes("Engineering"));
-  console.log("Kilo provider and MCP loaded; checking live reload");
   const eventually = async (predicate, failure) => {
     const end = Date.now() + 15000;
     while (Date.now() < end) {
-      if (await predicate()) return;
+      const result = await predicate();
+      if (result) return result;
       await Bun.sleep(250);
     }
     throw new Error(failure);
   };
+  const control = JSON.parse(await Bun.file(join(stateDir, "control.json")).text());
+  const status = await fetch(`http://127.0.0.1:${control.port}/command/corp_status`, { method: "POST", headers: { Authorization: `Bearer ${control.secret}` } });
+  assert.equal(status.status, 200);
+  assert((await status.json()).message.includes("Engineering"));
+  const command = fetch(`http://127.0.0.1:${control.port}/command/mcps_load`, { method: "POST", headers: { Authorization: `Bearer ${control.secret}` }, signal: AbortSignal.timeout(30000) });
+  const formURL = await eventually(async () => (await readFile(browserLog, "utf8").catch(() => "")).split("\n").find((line) => line.includes("/form/")), "Kilo did not open MCP selection");
+  assert.equal((await fetch(formURL, { method: "POST", headers: { Origin: new URL(formURL).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "choice=jira&choice=confluence" })).status, 200);
+  const tokenURL = await eventually(async () => (await readFile(browserLog, "utf8")).split("\n").find((line) => line.includes("/secret/")), "Kilo did not open token form");
+  const tokenHTML = await (await fetch(tokenURL)).text();
+  assert(tokenHTML.includes("Confluence"));
+  assert.equal((await fetch(tokenURL, { method: "POST", headers: { Origin: new URL(tokenURL).origin, "Content-Type": "application/x-www-form-urlencoded" }, body: "token%3Aconfluence=demo-confluence-token" })).status, 200);
+  assert.equal((await command).status, 200);
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).mcp.corp_confluence.headers.Authorization, `Bearer {env:${mcpEnvName(stateDir, "confluence")}}`);
+  assert.equal(await Bun.file(join(stateDir, "mcp-tokens/confluence")).exists(), false);
+  await eventually(async () => (await request("/config")).mcp?.corp_confluence?.headers?.Authorization === "Bearer demo-confluence-token", "Kilo did not resolve the new in-process MCP environment variable");
+  console.log("PASS browser form submits a new token to the running Kilo process without writing it to disk");
+  console.log("Kilo provider and MCP loaded; checking live reload");
   const updated = structuredClone(login.configuration);
   updated.revision = 2;
   updated.config.providers.corporate.models["demo-code"].name = "Company Code V2";
@@ -109,6 +132,7 @@ try {
   child?.kill("SIGTERM");
   if (child && child.exitCode === null) await Promise.race([new Promise((done) => child.once("exit", done)), Bun.sleep(3000)]);
   if (child?.exitCode === null) child.kill("SIGKILL");
+  await clearMCP(join(profile, "corporate-state"));
   emulator.stop();
   if (!process.exitCode) await rm(directory, { recursive: true, force: true });
 }

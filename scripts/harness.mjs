@@ -15,7 +15,7 @@ export async function eventually(fn, timeout = 12000) {
   }
   throw new Error(`Timed out${last ? `: ${last.message}` : ""}`);
 }
-export async function launch({ directory, port = 0, refreshMs = 3600000, loadPollMs = 30000, quiet = true, pluginSpec = root, pluginTimeout = 12000 } = {}) {
+export async function launch({ directory, port = 0, refreshMs = 3600000, loadPollMs = 30000, quiet = true, pluginSpec = root, pluginTimeout = 12000, envOverrides = {} } = {}) {
   directory = resolve(directory ?? join(root, ".demo"));
   const profile = join(directory, "config", "opencode");
   const project = join(directory, "project");
@@ -28,7 +28,7 @@ export async function launch({ directory, port = 0, refreshMs = 3600000, loadPol
   "share": "disabled",
   "plugins": [${JSON.stringify(pluginSpec)}]
 }\n`);
-  if (!await exists(join(project, "README.md"))) await writeFile(join(project, "README.md"), "# Корпоративный OpenCode\n\nНачните с /login. Это отдельная папка для демонстрации.\n");
+  if (!await exists(join(project, "README.md"))) await writeFile(join(project, "README.md"), "# Корпоративный OpenCode\n\nСтраница входа открывается автоматически. Это отдельная папка для демонстрации.\n");
   const emulator = createEmulator({ port });
   const connectionFile = join(profile, "opencode-connection.json");
   const environment = {
@@ -37,6 +37,7 @@ export async function launch({ directory, port = 0, refreshMs = 3600000, loadPol
     CORP_PROFILE_DIR: profile, CORP_SERVER_URL: emulator.baseURL, CORP_OPENCODE_CONNECTION_FILE: connectionFile,
     CORP_REFRESH_INTERVAL_MS: String(refreshMs), CORP_LOAD_INTERVAL_MS: String(loadPollMs),
     CORP_NO_BROWSER: quiet ? "1" : (process.env.CORP_NO_BROWSER ?? "0"), CORP_NO_NOTIFICATIONS: quiet ? "1" : (process.env.CORP_NO_NOTIFICATIONS ?? "0"),
+    ...envOverrides,
   };
   const binary = process.env.OPENCODE_BIN ?? "/Applications/OpenCode.app/Contents/Resources/opencode-cli";
   const processHandle = spawn(binary, ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd: project, env: environment, stdio: ["ignore", "pipe", "pipe"] });

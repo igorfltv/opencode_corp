@@ -23,8 +23,8 @@ const name = process.argv[2];
 if (!names.has(name)) throw new Error("Неизвестная корпоративная команда");
 const directory = dirname(fileURLToPath(import.meta.url));
 const files = (await readdir(directory)).filter((file) => /^control-\d+\.json$/.test(file));
-files.sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
-files.push("control.json");
+files.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
+files.unshift("control.json");
 
 async function active(file) {
   try {

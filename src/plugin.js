@@ -1,6 +1,8 @@
 import { CorporateRuntime, optionsFromEnv, lights } from "./runtime.js";
 import { startKiloControl } from "./kilo-control.js";
 import { installKiloWorkflows } from "./kilo-workflows.js";
+import { mcpEnvName } from "./mcp.js";
+import { syncOpenCodeMCP } from "./config.js";
 
 const rpc = {
   id: "company.corporate",
@@ -8,7 +10,7 @@ const rpc = {
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } },
 };
 // A changed runtime shape must not reuse an instance left by a hot-reloaded package.
-const registryKey = Symbol.for("company.opencode.corporate.runtime.v2");
+const registryKey = Symbol.for("company.opencode.corporate.runtime.v4");
 export default {
   id: "company-corporate",
   // Official Kilo clients load the same server plugin. The TUI has direct
@@ -26,7 +28,7 @@ export default {
     const key = `${options.configPath}|${options.serverURL}`;
     let entry = registry.get(key);
     if (!entry) {
-      const runtime = new CorporateRuntime(options);
+      const runtime = new CorporateRuntime(options, { syncMCP: (configs) => syncOpenCodeMCP(options.configPath, options.stateDir, configs) });
       entry = { runtime, ready: runtime.start(), refs: 0 };
       registry.set(key, entry);
     }
@@ -37,7 +39,10 @@ export default {
     runtime.mcpReloaders.add(reloadMCP);
     const mcpRegistration = await context.mcp.transform((editor) => {
       for (const [name] of editor.list()) if (name.startsWith("corp_")) editor.remove(name);
-      if (runtime.authenticated()) for (const { name, config } of runtime.mcpConfigs) editor.set(name, config);
+      if (runtime.authenticated()) for (const { name, config } of runtime.mcpConfigs) {
+        const value = process.env[mcpEnvName(options.stateDir, name.slice(5))];
+        if (value) editor.set(name, { ...config, headers: { Authorization: `Bearer ${value}` } });
+      }
     });
     const registration = await context.rpc.register(rpc, { status: async () => runtime.status() });
     const listener = (event) => registration.events.emit("notice", event);
@@ -63,6 +68,10 @@ export default {
         catch (error) { await runtime.bridge.message(sessionID, `/${name}`, error.message); }
       } });
     });
+    if (!entry.autoLoginStarted) {
+      entry.autoLoginStarted = true;
+      void runtime.autoLogin();
+    }
     return () => {
       runtime.mcpReloaders.delete(reloadMCP);
       mcpRegistration.dispose?.();

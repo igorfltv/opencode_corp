@@ -19,8 +19,8 @@ export async function startLogin(api, { timeoutMs = 300000 } = {}) {
       try {
         const token = await api.request("/oauth/token", { method: "POST", body: { code: url.searchParams.get("code"), verifier, redirectURI }, signal: controller.signal });
         resolve(token.data);
-        return new Response("Вход подтверждён. Вернитесь в OpenCode.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
-      } catch (error) { reject(error); return new Response("Вход не завершён. Повторите /login в OpenCode.", { status: 400 }); }
+        return new Response("Вход подтверждён. Вернитесь в приложение.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
+      } catch (error) { reject(error); return new Response("Вход не завершён. Повторите вход в приложении.", { status: 400 }); }
       finally { clearTimeout(timer); setTimeout(() => server.stop(true), 100).unref(); }
     },
   });

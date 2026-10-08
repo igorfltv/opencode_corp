@@ -5,8 +5,8 @@ import { atomicWrite, exists, readJSON, serial, trustedURL } from "./io.js";
 import { CorporateAPI, Unauthorized } from "./api.js";
 import { applyConfig, removeProvider, validateConfig } from "./config.js";
 import { validateCatalog, installSkills } from "./skills.js";
-import { validateMCPCatalog, readMCPState, saveMCPSelection, clearMCP } from "./mcp.js";
-import { captureSecret } from "./secret-page.js";
+import { validateMCPCatalog, readMCPState, saveMCPSelection, clearMCP, clearMCPEnv } from "./mcp.js";
+import { captureSecrets } from "./secret-page.js";
 import { startLogin } from "./login.js";
 import { openBrowser, notifyDesktop } from "./desktop.js";
 import { OpenCodeBridge } from "./bridge.js";
@@ -36,6 +36,11 @@ export class CorporateRuntime {
     this.mcpReloaders = new Set();
   }
   async start() {
+    // A previous release persisted MCP PATs. Never import them into this session.
+    await Promise.all([
+      rm(join(this.options.stateDir, "mcp-selection.json"), { force: true }),
+      rm(join(this.options.stateDir, "mcp-tokens"), { force: true, recursive: true }),
+    ]);
     this.credential = await readJSON(join(this.options.stateDir, "credential.json"));
     if (!validCredential(this.credential) || this.credential.expiresAt <= Date.now()) this.credential = null;
     this.state = await readJSON(join(this.options.stateDir, "sync.json"), {});
@@ -144,22 +149,47 @@ export class CorporateRuntime {
       }
     }).finally(() => this.jobs.delete(promise));
   }
+  async autoLogin() {
+    if (this.authenticated() || this.abort.signal.aborted || process.env.CORP_NO_BROWSER === "1") return false;
+    try { await this.login(null); return true; }
+    catch (error) {
+      await this.notice(`Не удалось открыть вход автоматически: ${error.message}. Выполните /login.`, "warning");
+      return false;
+    }
+  }
   async login(sessionID, reload = async () => {}) {
-    if (this.loginFlow || this.loginPending) throw new Error("Вход уже открыт в браузере");
-    this.loginPending = true;
+    if (this.loginFlow) {
+      if (sessionID) {
+        await this.open(this.loginFlow.url);
+        await this.bridge.message(sessionID, "Вход открыт", "Страница входа повторно открыта в браузере. Завершите авторизацию там.");
+      }
+      return;
+    }
+    if (this.loginPending) {
+      await this.loginPending.catch(() => {});
+      return this.login(sessionID, reload);
+    }
+    this.loginPending = startLogin(this.api);
     const generation = this.authGeneration;
     let flow;
-    try { flow = await startLogin(this.api); } finally { this.loginPending = false; }
+    try { flow = await this.loginPending; } finally { this.loginPending = null; }
     if (generation !== this.authGeneration || this.abort.signal.aborted) { flow.cancel(); return; }
     this.loginFlow = flow;
     const clientName = this.options.client === "kilo" ? "Kilo" : "OpenCode";
-    const form = await this.bridge.form(sessionID, `Вход в корпоративный ${clientName}`, [
+    const form = sessionID ? await this.bridge.form(sessionID, `Вход в корпоративный ${clientName}`, [
       { type: "external", key: "login", title: "Открыть страницу входа", url: flow.url },
       { type: "string", key: "waiting", title: `Вход в корпоративный ${clientName}`, description: `В открывшемся браузере выберите тестовую учётную запись. Пароль не нужен. Если браузер не открылся, скопируйте адрес: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "Ожидаю входа в браузере" }] },
-    ]).catch((error) => { flow.cancel(); this.loginFlow = null; throw error; });
-    this.open(flow.url).catch(() => this.notice(`Откройте ссылку входа в форме ${clientName}`, "info"));
+    ]).catch((error) => { flow.cancel(); this.loginFlow = null; throw error; }) : null;
+    try { await this.open(flow.url); }
+    catch {
+      if (form) await this.notice(`Откройте ссылку входа в форме ${clientName}`, "info");
+      else {
+        flow.cancel(); this.loginFlow = null;
+        throw new Error("браузер не открылся");
+      }
+    }
     const cancellation = new AbortController();
-    this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => { if (answer === null) flow.cancel(); }).catch(() => {});
+    if (form) this.bridge.wait(sessionID, form.id, AbortSignal.any([this.abort.signal, cancellation.signal])).then((answer) => { if (answer === null) flow.cancel(); }).catch(() => {});
     this.track((async () => {
       try {
         const result = await flow.result;
@@ -177,12 +207,12 @@ export class CorporateRuntime {
           await this.persistState();
         });
         await reload();
-        await this.bridge.message(sessionID, "Вход выполнен", `${result.user.name}. Конфиг версии ${this.state.revision} применён. Доступны /refresh_config и /skills_load.`);
+        if (form) await this.bridge.message(sessionID, "Вход выполнен", `${result.user.name}. Конфиг версии ${this.state.revision} применён. Доступны /refresh_config и /skills_load.`);
         await this.notice("Вход выполнен; корпоративный конфиг применён", "success");
         await this.pollLoad();
       } finally {
         cancellation.abort();
-        await this.bridge.cancel(sessionID, form.id);
+        if (form) await this.bridge.cancel(sessionID, form.id);
         this.loginFlow = null;
       }
     })(), sessionID);
@@ -232,19 +262,21 @@ export class CorporateRuntime {
         const answer = await this.bridge.wait(sessionID, form.id, signal);
         if (answer === null) return;
         const ids = answer.mcps ?? [];
-        const tokens = new Map();
-        for (const id of ids) {
+        const requested = ids.map((id) => {
           const item = catalog.find((entry) => entry.id === id);
           if (!item) throw new Error("Выбран MCP вне доступного каталога");
-          if (selected.includes(id)) continue;
-          const page = await captureSecret(`Личный токен для ${item.name}`);
+          return item;
+        }).filter((item) => !selected.includes(item.id));
+        let tokens = new Map();
+        if (requested.length) {
+          const page = await captureSecrets(requested);
           const cancel = () => page.cancel();
           signal.addEventListener("abort", cancel, { once: true });
           let notice;
           try {
-            notice = await this.bridge.form(sessionID, `Токен ${item.name}`, [{ type: "external", key: "token", title: "Открыть защищённую локальную форму", url: page.url }]);
+            notice = await this.bridge.form(sessionID, "Токены выбранных MCP", [{ type: "external", key: "tokens", title: "Открыть локальную форму для токенов", url: page.url }]);
             await this.open(page.url).catch(() => {});
-            tokens.set(id, await page.result);
+            tokens = await page.result;
           } finally {
             signal.removeEventListener("abort", cancel);
             page.cancel();
@@ -277,6 +309,7 @@ export class CorporateRuntime {
   dispose() {
     clearInterval(this.configTimer); clearInterval(this.loadTimer);
     this.abort.abort(); this.loginFlow?.cancel();
+    clearMCPEnv(this.options.stateDir);
   }
 }
 

@@ -7,13 +7,24 @@ import { KiloBridge } from "./kilo-bridge.js";
 import { syncKiloMCP } from "./config.js";
 import { atomicWrite, random, serial } from "./io.js";
 
-const key = Symbol.for("company.kilo.corporate.control.v1");
+const key = Symbol.for("company.kilo.corporate.control.v3");
+const legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
 const commands = new Set(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
 
 export async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
-  const registry = globalThis[key] ??= new Map();
   const name = `${options.configPath}|${options.serverURL}`;
+  for (const legacyKey of legacyKeys) {
+    const legacy = globalThis[legacyKey];
+    if (!legacy?.has(name)) continue;
+    const previous = await legacy.get(name).catch(() => null);
+    legacy.delete(name);
+    previous?.runtime.dispose();
+    previous?.bridge.dispose();
+    previous?.server.closeAllConnections();
+    previous?.server.close();
+  }
+  const registry = globalThis[key] ??= new Map();
   if (registry.has(name)) return registry.get(name);
   const ready = boot(options, adapters).catch((error) => { registry.delete(name); throw error; });
   registry.set(name, ready);
@@ -93,6 +104,7 @@ async function boot(options, adapters) {
     process.once("exit", () => { try { rmSync(ownFile, { force: true }); } catch {} });
     await atomicWrite(ownFile, state);
     await atomicWrite(join(options.stateDir, "control.json"), state);
+    void runtime.autoLogin();
     return { runtime, server, bridge };
   } catch (error) {
     server.close(); runtime.dispose(); bridge.dispose();
