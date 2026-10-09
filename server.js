@@ -2787,6 +2787,7 @@ class KiloBridge {
   }
   async form(_sessionID, title, fields) {
     const id = random();
+    const csrf = random();
     const field = fields.find((item) => item.type === "multiselect");
     if (!field)
       return { id };
@@ -2804,11 +2805,12 @@ class KiloBridge {
       }
       if (request.method === "GET") {
         const choices = field.options.map((item) => `<label><input type="checkbox" name="choice" value="${escape(item.value)}" ${field.default?.includes(item.value) ? "checked" : ""}><span><b>${escape(item.label)}</b><small>${escape(item.description ?? "")}</small></span></label>`).join("");
-        const html = `<!doctype html><html lang="ru"><meta charset="utf-8"><title>${escape(title)}</title><style>body{font:16px system-ui;background:#f7f7f4;color:#222;max-width:620px;margin:6vh auto;padding:24px}h1{font-size:24px}label{display:flex;gap:12px;padding:14px;margin:10px 0;background:white;border:1px solid #ddd;border-radius:10px}small{display:block;color:#666;margin-top:4px}button{background:#222;color:white;border:0;border-radius:8px;padding:12px 20px;cursor:pointer}</style><h1>${escape(title)}</h1><p>${escape(field.description ?? "")}</p><form method="post">${choices}<button>\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C</button></form></html>`;
+        const html = `<!doctype html><html lang="ru"><meta charset="utf-8"><title>${escape(title)}</title><style>body{font:16px system-ui;background:#f7f7f4;color:#222;max-width:620px;margin:6vh auto;padding:24px}h1{font-size:24px}label{display:flex;gap:12px;padding:14px;margin:10px 0;background:white;border:1px solid #ddd;border-radius:10px}small{display:block;color:#666;margin-top:4px}button{background:#222;color:white;border:0;border-radius:8px;padding:12px 20px;cursor:pointer}</style><h1>${escape(title)}</h1><p>${escape(field.description ?? "")}</p><form method="post" action="/form/${id}"><input type="hidden" name="csrf" value="${csrf}">${choices}<button>\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C</button></form></html>`;
         response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(html);
         return;
       }
-      if (request.method !== "POST" || request.headers.origin !== new URL(url2).origin || !request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
+      const origin = new URL(url2).origin;
+      if (request.method !== "POST" || request.headers.origin && request.headers.origin !== origin && request.headers.origin !== "null" || request.headers["content-type"]?.split(";")[0] !== "application/x-www-form-urlencoded") {
         response.writeHead(403, headers).end();
         return;
       }
@@ -2820,7 +2822,12 @@ class KiloBridge {
           return;
         }
       }
-      const values = new URLSearchParams(body).getAll("choice");
+      const form = new URLSearchParams(body);
+      if (form.getAll("csrf").length !== 1 || form.get("csrf") !== csrf) {
+        response.writeHead(403, headers).end();
+        return;
+      }
+      const values = form.getAll("choice");
       if (new Set(values).size !== values.length || values.some((value) => !options.has(value))) {
         response.writeHead(400, headers).end();
         return;
