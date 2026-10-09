@@ -139,6 +139,7 @@ try {
   assert((await runCommand("logout")).message.includes("Выход выполнен"));
   assert.equal((await request("/config")).provider?.corporate, undefined);
   assert.equal(await readFile(join(stateDir, "access-token"), "utf8"), "");
+  assert.equal(await readFile(join(stateDir, "access-token-next"), "utf8"), "");
   console.log("PASS installed Kilo CLI loads the plugin, corporate provider and MCP configuration");
   console.log("PASS Kilo CLI reloads provider configuration through its instance API");
   console.log("PASS Kilo CLI discovers installed corporate skills after instance reload");

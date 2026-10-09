@@ -70,6 +70,7 @@ try {
   });
   assert.equal((await fetch(`${demo.emulator.baseURL}/v1/models`, { headers: { Authorization: `Bearer ${rotatedToken}` } })).status, 200);
   assert.equal((await fetch(`${demo.emulator.baseURL}/api/config`, { headers: { Authorization: `Bearer ${rotatedToken}` } })).status, 401);
+  await eventually(async () => (await demo.request("/api/config")).find((entry) => entry.info?.providers?.corporate)?.info.providers.corporate.settings?.apiKey === rotatedToken);
   console.log("PASS automatic token rotation and inference-only audience in the installed OpenCode process");
   console.log("PASS browser PKCE login, inference-only token file, JSONC patch and live OpenCode config reload");
   await dismiss();
@@ -129,6 +130,7 @@ try {
   await findForm("Выход выполнен");
   assert(!parseConfig(await readFile(demo.configPath, "utf8")).providers);
   assert.equal(await readFile(join(demo.profile, "corporate-state/access-token"), "utf8"), "");
+  assert.equal(await readFile(join(demo.profile, "corporate-state/access-token-next"), "utf8"), "");
   assert.equal(await stat(join(demo.profile, "corporate-state/mcp-tokens/jira")).then(() => true, () => false), false);
   assert(!JSON.stringify(demo.emulator.state.audit).includes(accessToken));
   await dismiss(); await demo.command("corp_status");

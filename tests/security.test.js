@@ -308,6 +308,7 @@ test("startup without a valid login clears stale provider and credentials", asyn
   await atomicWrite(configPath, '{"plugins":["github:igorfltv/opencode_corp#main"],"providers":{"corporate":{"name":"Demo"}}}');
   await atomicWrite(join(stateDir, "credential.json"), JSON.stringify({ accessToken: random(), expiresAt: Date.now() - 1000, user: { name: "Expired" } }));
   await atomicWrite(join(stateDir, "access-token"), "stale-token");
+  await atomicWrite(join(stateDir, "access-token-next"), "stale-token");
   await atomicWrite(join(stateDir, "sync.json"), JSON.stringify({ revision: 1 }));
   const runtime = new CorporateRuntime(optionsFromEnv({}, { profileDir: root, serverURL: "http://127.0.0.1:4310" }), { notify: async () => {} });
   try {
@@ -315,6 +316,7 @@ test("startup without a valid login clears stale provider and credentials", asyn
     expect(runtime.status().authenticated).toBe(false);
     expect(parseConfig(await readFile(configPath, "utf8"))).toEqual({ plugins: ["github:igorfltv/opencode_corp#main"] });
     expect(await readFile(join(stateDir, "access-token"), "utf8")).toBe("");
+    expect(await readFile(join(stateDir, "access-token-next"), "utf8")).toBe("");
     expect(await exists(join(stateDir, "credential.json"))).toBeNull();
     expect(await exists(join(stateDir, "sync.json"))).toBeNull();
   } finally { runtime.dispose(); }
