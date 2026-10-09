@@ -7,18 +7,24 @@ import { approveBrowser } from "../tests/helpers.js";
 import { parseConfig } from "../src/config.js";
 
 const directory = await mkdtemp(join(tmpdir(), "corporate-github-"));
+const pluginSpec = process.env.CORP_GITHUB_PLUGIN_SPEC ?? "github:igorfltv/opencode_corp#main";
 let demo;
 try {
-  demo = await launch({ directory, pluginSpec: "github:igorfltv/opencode_corp#main", pluginTimeout: 60000, quiet: true });
+  demo = await launch({ directory, pluginSpec, pluginTimeout: 60000, quiet: true });
   const config = await readFile(demo.configPath, "utf8");
-  assert(config.includes('"github:igorfltv/opencode_corp#main"'));
+  assert(config.includes(JSON.stringify(pluginSpec)));
   assert.equal(parseConfig(config).providers, undefined);
   const plugins = (await demo.request("/api/plugin")).data;
   assert(plugins.some((plugin) => plugin.id === "company-corporate" && plugin.state.status === "active"));
   const commands = (await demo.request("/api/command")).data.map((command) => command.name);
   for (const name of ["login", "refresh_config", "skills_load", "mcps_load", "inference_status", "corp_status", "logout"]) assert(commands.includes(name));
   console.log("PASS GitHub plugin loaded by OpenCode with all seven slash commands");
-  for (const name of ["refresh_config", "skills_load", "mcps_load", "inference_status", "corp_status", "logout"]) {
+  await demo.command("skills_load");
+  const publicForm = await eventually(async () => (await demo.forms()).find((entry) => entry.title.includes("Загрузить skills и плагины")));
+  assert.equal(publicForm.fields[0].options.length, 4);
+  await demo.request(`/api/session/${demo.session.id}/form/${publicForm.id}`, { method: "DELETE" });
+  console.log("PASS GitHub plugin offers public community packages without login");
+  for (const name of ["refresh_config", "mcps_load", "inference_status", "corp_status", "logout"]) {
     await demo.command(name);
     const form = await eventually(async () => (await demo.forms()).find((entry) => entry.title.includes(`/${name}`)));
     assert(form.fields[0].description.includes("Сначала выполните /login"), `${name} did not require login`);
