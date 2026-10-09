@@ -2,6 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { optionsFromEnv } from "./runtime.js";
 import { commands } from "./commands.js";
+import { NOTIFICATION_TITLE } from "./desktop.js";
 
 async function invokeControl(stateDir, command) {
   const files = (await readdir(stateDir)).filter((file) => /^control-\d+\.json$/.test(file));
@@ -35,7 +36,7 @@ export default {
       const location = context.location ?? context.data.location.default();
       if (details.location?.directory !== location.directory) return;
       const { message, level } = details.data;
-      context.ui.toast.show({ title: "Company OpenCode", message, variant: level, duration: 7000 });
+      context.ui.toast.show({ title: NOTIFICATION_TITLE, message, variant: level, duration: 7000 });
     });
   },
   async tui(api, settings = {}) {

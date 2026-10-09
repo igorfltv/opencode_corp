@@ -207,6 +207,7 @@ var packages = Object.freeze([
 import { execFile } from "child_process";
 import { promisify } from "util";
 var exec = promisify(execFile);
+var NOTIFICATION_TITLE = "CodeAssistant";
 
 // src/runtime.js
 function optionsFromEnv(env = process.env, settings = {}) {
@@ -285,7 +286,7 @@ var tui_default = {
       if (details.location?.directory !== location.directory)
         return;
       const { message, level } = details.data;
-      context.ui.toast.show({ title: "Company OpenCode", message, variant: level, duration: 7000 });
+      context.ui.toast.show({ title: NOTIFICATION_TITLE, message, variant: level, duration: 7000 });
     });
   },
   async tui(api, settings = {}) {
