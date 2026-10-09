@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 
 const names = new Set(${JSON.stringify(commands.map(({ name }) => name))});
 const name = process.argv[2];
-if (!names.has(name)) throw new Error("Неизвестная корпоративная команда");
+if (!names.has(name)) { console.log("Неизвестная корпоративная команда. Выберите команду из списка Kilo."); process.exit(0); }
+try {
 const directory = dirname(fileURLToPath(import.meta.url));
 const files = (await readdir(directory)).filter((file) => /^control-\d+\.json$/.test(file));
 files.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
@@ -36,15 +37,16 @@ for (const file of files) {
   control = await active(file);
   if (control) break;
 }
-if (!control) throw new Error("Корпоративный плагин Kilo не запущен");
+if (!control) { console.log("Корпоративный плагин Kilo не запущен. Что сделать: 1. Перезапустите Kilo. 2. Проверьте загрузку плагина и повторите /" + name + "."); process.exit(0); }
 const response = await fetch("http://127.0.0.1:" + control.port + "/command/" + name, {
   method: "POST", headers: { Authorization: "Bearer " + control.secret },
   signal: AbortSignal.timeout(310000),
 });
 const result = await response.json();
-if (!response.ok) throw new Error(result.error || "Команда не выполнена");
+if (!response.ok) { console.log(typeof result.error === "string" && result.error.includes("Что сделать:") ? result.error : "Не удалось выполнить /" + name + ". Что сделать: 1. Повторите команду. 2. Проверьте состояние плагина."); process.exit(0); }
 if (typeof result.message !== "string") throw new Error("Некорректный ответ плагина");
 console.log(result.message);
+} catch { console.log("Не удалось связаться с корпоративным плагином Kilo. Что сделать: 1. Перезапустите Kilo. 2. Повторите /" + name + "."); }
 `;
 
 function quote(path) {

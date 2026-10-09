@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { optionsFromEnv } from "./runtime.js";
 import { commands } from "./commands.js";
 import { NOTIFICATION_TITLE } from "./desktop.js";
+import { userError } from "./user-errors.js";
 
 async function invokeControl(stateDir, command) {
-  const files = (await readdir(stateDir)).filter((file) => /^control-\d+\.json$/.test(file));
+  const files = (await readdir(stateDir).catch(() => [])).filter((file) => /^control-\d+\.json$/.test(file));
   files.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
   files.unshift("control.json");
   for (const file of files) {
@@ -20,7 +21,7 @@ async function invokeControl(stateDir, command) {
     } catch { continue; }
     const response = await fetch(`http://127.0.0.1:${state.port}/command/${command}`, {
       method: "POST", headers: { Authorization: `Bearer ${state.secret}` }, signal: AbortSignal.timeout(310000),
-    });
+    }).catch(() => { throw new Error("Корпоративный плагин Kilo не запущен"); });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? "Команда не выполнена");
     return result;
@@ -40,7 +41,7 @@ export default {
     });
   },
   async tui(api, settings = {}) {
-    if (!api.command?.register) throw new Error("Для корпоративных команд нужен Kilo CLI 7.x с TUI plugin API");
+    if (!api.command?.register) throw new Error("Для корпоративных команд нужен Kilo CLI 7.x с TUI plugin API. Обновите Kilo и перезапустите приложение.");
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
     const unregister = api.command.register(() => commands.map(({ name, kiloDescription }) => ({
       title: `/${name}`, value: `company.${name}`, description: kiloDescription, category: "Company", slash: { name },
@@ -53,7 +54,7 @@ export default {
           }
           api.ui.toast({ title: `/${name}`, message: result.message, variant: "info", duration: 10000 });
         } catch (error) {
-          api.ui.toast({ title: `/${name}`, message: error.message, variant: "error", duration: 10000 });
+          api.ui.toast({ title: `/${name}`, message: userError(error, name), variant: "error", duration: 15000 });
         }
       },
     })));

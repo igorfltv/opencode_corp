@@ -1,4 +1,5 @@
 import { lights } from "./runtime.js";
+import { userError } from "./user-errors.js";
 
 export const commands = Object.freeze([
   { name: "login", description: "Войти в корпоративный OpenCode через браузер", kiloDescription: "Войти в корпоративный сервис", reload: true },
@@ -48,7 +49,8 @@ export function registerOpenCodeCommands(context, runtime) {
         }
         await runOpenCodeCommand(runtime, context, name, sessionID);
       } catch (error) {
-        await runtime.bridge.message(sessionID, `/${name}`, error.message);
+        const message = userError(error, name);
+        await runtime.bridge.message(sessionID, `/${name}`, message).catch(() => runtime.notice(message, "error"));
       }
     } });
   });

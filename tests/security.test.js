@@ -11,7 +11,7 @@ import { installSkills, validateCatalog } from "../src/skills.js";
 import { optionsFromEnv, CorporateRuntime } from "../src/runtime.js";
 import { atomicWrite, digest, exists, random } from "../src/io.js";
 import { validateMCPCatalog, saveMCPSelection, readMCPState, clearMCP, mcpEnvName } from "../src/mcp.js";
-import { captureSecrets } from "../src/secret-page.js";
+import { captureMCPSetup } from "../src/secret-page.js";
 import { approveBrowser } from "./helpers.js";
 
 const cleanups = [];
@@ -167,36 +167,42 @@ test("MCP catalog is role-scoped and cannot redirect personal tokens", async () 
   expect(process.env[mcpEnvName(root, "confluence")]).toBeUndefined();
 });
 
-test("one browser form captures only requested MCP tokens and never echoes them", async () => {
-  const page = await captureSecrets([{ id: "jira", name: "Jira", description: "Задачи" }, { id: "confluence", name: "Confluence", description: "Страницы" }], { timeoutMs: 2000 });
+test("one browser form selects MCPs and captures their tokens without echoing them", async () => {
+  const page = await captureMCPSetup([{ id: "jira", name: "Jira", description: "Задачи" }, { id: "confluence", name: "Confluence", description: "Страницы" }], { timeoutMs: 2000 });
   try {
     expect(new URL(page.url).hostname).toBe("127.0.0.1");
     const html = await (await fetch(page.url)).text();
     expect(html).toContain("Jira");
     expect(html).toContain("Confluence");
+    expect(html).toContain('type="checkbox" name="mcp" value="jira"');
+    expect(html).toContain('name="token:jira"');
     expect(html).not.toContain("demo-jira-token");
     const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
     expect(csrf).toBeTruthy();
-    const incompleteBody = new URLSearchParams({ csrf, "token:jira": "demo-jira-token" });
-    const completeBody = new URLSearchParams({ csrf, "token:jira": "demo-jira-token", "token:confluence": "demo-confluence-token" });
+    const incompleteBody = new URLSearchParams([["csrf", csrf], ["mcp", "jira"], ["mcp", "confluence"], ["token:jira", "demo-jira-token"]]);
+    const completeBody = new URLSearchParams([["csrf", csrf], ["mcp", "jira"], ["mcp", "confluence"], ["token:jira", "demo-jira-token"], ["token:confluence", "demo-confluence-token"]]);
     const invalid = await fetch(page.url, { method: "POST", headers: { Origin: "https://attacker.example", "Content-Type": "application/x-www-form-urlencoded" }, body: completeBody });
     expect(invalid.status).toBe(403);
-    const missingCSRF = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "token%3Ajira=demo-jira-token&token%3Aconfluence=demo-confluence-token" });
+    const missingCSRF = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "mcp=jira&token%3Ajira=demo-jira-token" });
     expect(missingCSRF.status).toBe(403);
     const incomplete = await fetch(page.url, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: incompleteBody });
     expect(incomplete.status).toBe(400);
+    expect(await incomplete.text()).toContain("Вернуться к форме");
     const response = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: completeBody });
     expect(response.status).toBe(200);
     expect(await response.text()).not.toContain("demo-jira-token");
-    expect([...await page.result]).toEqual([["jira", "demo-jira-token"], ["confluence", "demo-confluence-token"]]);
+    const result = await page.result;
+    expect(result.ids).toEqual(["jira", "confluence"]);
+    expect([...result.tokens]).toEqual([["jira", "demo-jira-token"], ["confluence", "demo-confluence-token"]]);
   } finally { page.cancel(); }
 });
 
 test("browser waits for MCP setup and shows a safe result page", async () => {
   let submitted = false;
-  const page = await captureSecrets([{ id: "jira", name: "Jira", description: "Задачи" }], {
+  const page = await captureMCPSetup([{ id: "jira", name: "Jira", description: "Задачи" }], {
     timeoutMs: 2000,
-    onSubmit: async (tokens) => {
+    onSubmit: async (ids, tokens) => {
+      expect(ids).toEqual(["jira"]);
       expect(tokens.get("jira")).toBe("private-token");
       await new Promise((resolve) => setTimeout(resolve, 30));
       submitted = true;
@@ -206,7 +212,7 @@ test("browser waits for MCP setup and shows a safe result page", async () => {
   try {
     const html = await (await fetch(page.url)).text();
     const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
-    const response = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "private-token" }) });
+    const response = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, mcp: "jira", "token:jira": "private-token" }) });
     expect(response.status).toBe(200);
     const result = await response.text();
     expect(submitted).toBe(true);
@@ -214,8 +220,32 @@ test("browser waits for MCP setup and shows a safe result page", async () => {
     expect(result).toContain("&lt;Jira&gt;");
     expect(result).toContain("Токен отклонён (HTTP 401)");
     expect(result).not.toContain("private-token");
-    expect([...await page.result]).toEqual([["jira", "private-token"]]);
+    expect([...((await page.result).tokens)]).toEqual([["jira", "private-token"]]);
   } finally { page.cancel(); }
+});
+
+test("existing MCPs keep their tokens unless replaced and can all be disabled", async () => {
+  const items = [{ id: "jira", name: "Jira", description: "Задачи" }, { id: "confluence", name: "Confluence", description: "Страницы" }];
+  const page = await captureMCPSetup(items, { selected: ["jira"], timeoutMs: 2000 });
+  try {
+    const html = await (await fetch(page.url)).text();
+    expect(html).toContain('value="jira" checked');
+    expect(html).toContain("Оставьте пустым, чтобы сохранить текущий");
+    const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
+    const injected = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, mcp: "jira", "token:confluence": "unselected-token" }) });
+    expect(injected.status).toBe(400);
+    const response = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, mcp: "jira" }) });
+    expect(response.status).toBe(200);
+    expect((await page.result).tokens.size).toBe(0);
+  } finally { page.cancel(); }
+  const disable = await captureMCPSetup(items, { selected: ["jira"], timeoutMs: 2000 });
+  try {
+    const html = await (await fetch(disable.url)).text();
+    const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
+    const response = await fetch(disable.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf }) });
+    expect(response.status).toBe(200);
+    expect((await disable.result).ids).toEqual([]);
+  } finally { disable.cancel(); }
 });
 
 test("patches only its provider, preserves JSONC comments and stores no token in config", async () => {

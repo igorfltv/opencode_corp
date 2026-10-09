@@ -27,6 +27,10 @@ test("Kilo workflows install seven native chat commands without replacing user f
     const helper = join(options.stateDir, "workflow-command.mjs");
     expect((await stat(helper)).mode & 0o077).toBe(0);
     await execute("node", ["--check", helper]);
+    const offline = await execute("node", [helper, "corp_status"]);
+    expect(offline.stdout).toContain("Что сделать:");
+    expect(offline.stdout).toContain("Перезапустите Kilo");
+    expect(offline.stderr).toBe("");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

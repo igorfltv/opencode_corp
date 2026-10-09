@@ -7,6 +7,7 @@ import { KiloBridge } from "./kilo-bridge.js";
 import { syncKiloMCP } from "./config.js";
 import { atomicWrite, random, serial } from "./io.js";
 import { commandByName } from "./commands.js";
+import { userError } from "./user-errors.js";
 
 const key = Symbol.for("company.kilo.corporate.control.v6");
 const legacyKeys = [Symbol.for("company.kilo.corporate.control.v5"), Symbol.for("company.kilo.corporate.control.v4"), Symbol.for("company.kilo.corporate.control.v3"), Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
@@ -93,7 +94,7 @@ async function boot(options, adapters) {
       const result = await execute(command);
       response.writeHead(200, headers).end(JSON.stringify(result));
     } catch (error) {
-      response.writeHead(500, headers).end(JSON.stringify({ error: error.message ?? "Команда не выполнена" }));
+      response.writeHead(500, headers).end(JSON.stringify({ error: userError(error, command) }));
     }
   });
   try {

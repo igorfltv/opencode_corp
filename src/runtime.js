@@ -7,10 +7,11 @@ import { applyConfig, removeProvider, rotateProviderTokenReference, validateConf
 import { validateCatalog, installSkills } from "./skills.js";
 import { communityCatalog, installCommunity } from "./community.js";
 import { validateMCPCatalog, readMCPState, saveMCPSelection, clearMCP, clearMCPEnv } from "./mcp.js";
-import { captureSecrets } from "./secret-page.js";
+import { captureMCPSetup } from "./secret-page.js";
 import { startLogin } from "./login.js";
 import { openBrowser, notifyDesktop } from "./desktop.js";
 import { OpenCodeBridge } from "./bridge.js";
+import { userError } from "./user-errors.js";
 
 export const lights = { green: "🟢", yellow: "🟡", red: "🔴", unknown: "⚪" };
 const validToken = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{32,256}$/.test(value);
@@ -81,8 +82,8 @@ export class CorporateRuntime {
     this.tokenTimer = setTimeout(async () => {
       try { await this.ensureFreshTokens(true); }
       catch (error) {
-        if (error instanceof Unauthorized) await this.invalidate();
-        else { await this.notice("Не удалось обновить доступ к модели; повторяем попытку", "warning"); this.scheduleTokenRenewal(5000); }
+        if (error instanceof Unauthorized) { await this.invalidate(); await this.notice(userError(error, "login"), "warning"); }
+        else { await this.notice(`${userError(error, "login")}\nПлагин автоматически повторит обновление токена.`, "warning"); this.scheduleTokenRenewal(5000); }
       }
     }, delay);
     this.tokenTimer.unref();
@@ -138,7 +139,7 @@ export class CorporateRuntime {
         return this.state;
       } catch (error) {
         if (error instanceof Unauthorized) await this.invalidate();
-        this.state.lastError = error instanceof Unauthorized ? error.message : "Не удалось обновить конфиг; сохранена предыдущая версия";
+        this.state.lastError = userError(error, "refresh_config");
         await this.persistState();
         throw error;
       }
@@ -148,7 +149,7 @@ export class CorporateRuntime {
   async backgroundRefresh() {
     if (!this.credential) return;
     try { await this.refresh(); this.syncFailed = false; }
-    catch { if (!this.syncFailed) { this.syncFailed = true; await this.notice(this.state.lastError ?? "Нужен повторный /login", "warning"); } }
+    catch (error) { if (!this.syncFailed) { this.syncFailed = true; await this.notice(userError(error, "refresh_config"), "warning"); } }
   }
   async invalidate() {
     this.authGeneration++;
@@ -193,7 +194,7 @@ export class CorporateRuntime {
       if (!["green", "yellow", "red"].includes(data?.level) || typeof data.message !== "string" || data.message.length > 250 || !Number.isFinite(data.observedAt) || Math.abs(Date.now() - data.observedAt) > 90000) throw new Error("Нет свежих данных нагрузки");
       next = { level: data.level, message: data.message, queue: data.queue, checkedAt: data.observedAt };
     } catch (error) {
-      next = { level: "unknown", message: error instanceof Unauthorized ? "Требуется /login" : "Сервер нагрузки недоступен", checkedAt: Date.now() };
+      next = { level: "unknown", message: error instanceof Unauthorized ? "Сессия истекла. Выполните /login." : "Сервер нагрузки недоступен. Проверьте сеть и повторите /inference_status.", checkedAt: Date.now() };
       if (error instanceof Unauthorized) await this.queue(() => this.authGeneration === polledGeneration ? this.invalidate() : undefined);
     } finally { this.polling = false; }
     if (this.abort.signal.aborted) return;
@@ -203,12 +204,13 @@ export class CorporateRuntime {
     this.load = next;
     if (changed) await this.notice(`${lights[next.level]} Инференс: ${next.message}`, { green: "success", yellow: "warning", red: "error", unknown: "warning" }[next.level]);
   }
-  track(promise, sessionID, interactiveError = true) {
+  track(promise, sessionID, interactiveError = true, command = "login") {
     this.jobs.add(promise);
     promise.catch(async (error) => {
       if (!this.abort.signal.aborted) {
-        if (interactiveError) await this.bridge.message(sessionID, "Корпоративный плагин", error.message).catch(() => {});
-        await this.notice(error.message, "error");
+        const message = userError(error, command);
+        if (interactiveError && sessionID) await this.bridge.message(sessionID, "Корпоративный плагин", message).catch(() => {});
+        await this.notice(message, "error");
       }
     }).finally(() => this.jobs.delete(promise));
   }
@@ -216,7 +218,7 @@ export class CorporateRuntime {
     if (this.authenticated() || this.abort.signal.aborted || process.env.CORP_NO_BROWSER === "1") return false;
     try { await this.login(null); return true; }
     catch (error) {
-      await this.notice(`Не удалось открыть вход автоматически: ${error.message}. Выполните /login.`, "warning");
+      await this.notice(userError(error, "login"), "warning");
       return false;
     }
   }
@@ -280,7 +282,7 @@ export class CorporateRuntime {
         if (form) await this.bridge.cancel(sessionID, form.id);
         this.loginFlow = null;
       }
-    })(), sessionID);
+    })(), sessionID, true, "login");
   }
   async skills(sessionID, reload) {
     if (this.forms.has(sessionID)) throw new Error("Форма выбора skills уже открыта");
@@ -322,34 +324,22 @@ export class CorporateRuntime {
         await reload();
         await this.bridge.message(sessionID, "Skills загружены", installed.length ? installed.join("\n") : "Ничего не выбрано.");
       } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
-    })(), sessionID);
+    })(), sessionID, true, "skills_load");
   }
   async mcps(sessionID, reload = async () => {}) {
-    if (this.forms.has(sessionID)) throw new Error("Форма выбора уже открыта");
+    if (this.forms.has(sessionID)) throw new Error("Форма настройки MCP уже открыта");
     await this.apiToken();
     const accountGeneration = this.authGeneration;
     const catalog = await this.refreshMCPCatalog();
     if (!catalog.length) return this.options.client === "kilo" ? this.bridge.message(sessionID, "Корпоративные MCP", "Для вашей учётной записи нет доступных MCP.") : this.notice("Для вашей учётной записи нет доступных MCP.", "info");
     const selected = this.mcpConfigs.map(({ name }) => name.slice(5));
-    const form = await this.bridge.form(sessionID, "Подключить корпоративные MCP", [{
-      type: "multiselect", key: "mcps", title: "Выберите MCP", description: `Для отмеченных MCP откроется локальная форма ввода или замены токенов, не в чате ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
-      custom: false, minItems: 0, default: selected,
-      options: catalog.map((item) => ({ value: item.id, label: item.name, description: item.description })),
-    }]);
     const controller = new AbortController();
-    this.forms.set(sessionID, { form, controller });
+    this.forms.set(sessionID, { controller });
     this.track((async () => {
       try {
         const signal = AbortSignal.any([this.abort.signal, controller.signal, AbortSignal.timeout(300000)]);
-        const answer = await this.bridge.wait(sessionID, form.id, signal);
-        if (answer === null) return;
-        const ids = answer.mcps ?? [];
-        const requested = ids.map((id) => {
-          const item = catalog.find((entry) => entry.id === id);
-          if (!item) throw new Error("Выбран MCP вне доступного каталога");
-          return item;
-        });
-        const apply = async (tokens) => {
+        const apply = async (ids, tokens) => {
+          const requested = ids.map((id) => catalog.find((entry) => entry.id === id));
           await this.queue(async () => {
             if (signal.aborted || this.authGeneration !== accountGeneration || !this.authenticated()) throw new Error("Учётная запись изменилась; откройте /mcps_load снова");
             this.mcpConfigs = await saveMCPSelection(this.options.stateDir, ids, catalog, tokens);
@@ -379,23 +369,22 @@ export class CorporateRuntime {
           else await this.notice(`${states ? "MCP подключены" : "MCP добавлены в конфиг"}: ${names}`, "success");
           return { kind: states ? "success" : "warning", title: states ? "MCP подключены" : "MCP добавлены в конфиг", message: states ? "Системы доступны в OpenCode." : "Проверьте соединение в Kilo.", items };
         };
-        if (requested.length) {
-          const page = await captureSecrets(requested, { onSubmit: apply });
-          const cancel = () => page.cancel();
-          signal.addEventListener("abort", cancel, { once: true });
-          let notice;
-          try {
-            if (process.env.CORP_NO_BROWSER === "1") notice = await this.bridge.form(sessionID, "Токены выбранных MCP", [{ type: "external", key: "tokens", title: "Открыть локальную форму для токенов", url: page.url }]);
-            else await this.open(page.url).catch(async () => { notice = await this.bridge.form(sessionID, "Токены выбранных MCP", [{ type: "external", key: "tokens", title: "Открыть локальную форму для токенов", url: page.url }]); });
-            await page.result;
-          } finally {
-            signal.removeEventListener("abort", cancel);
-            page.cancel();
-            if (notice) await this.bridge.cancel(sessionID, notice.id);
-          }
-        } else await apply(new Map());
-      } finally { this.forms.delete(sessionID); await this.bridge.cancel(sessionID, form.id); }
-    })(), sessionID, false);
+        const page = await captureMCPSetup(catalog, { selected, onSubmit: apply });
+        const cancel = () => page.cancel();
+        if (signal.aborted) cancel();
+        else signal.addEventListener("abort", cancel, { once: true });
+        let notice;
+        try {
+          if (process.env.CORP_NO_BROWSER === "1") notice = await this.bridge.form(sessionID, "Подключить корпоративные MCP", [{ type: "external", key: "mcps", title: "Открыть настройку MCP", url: page.url }]);
+          else await this.open(page.url).catch(async () => { notice = await this.bridge.form(sessionID, "Подключить корпоративные MCP", [{ type: "external", key: "mcps", title: "Открыть настройку MCP", url: page.url }]); });
+          await page.result;
+        } finally {
+          signal.removeEventListener("abort", cancel);
+          page.cancel();
+          if (notice) await this.bridge.cancel(sessionID, notice.id);
+        }
+      } finally { this.forms.delete(sessionID); }
+    })(), sessionID, false, "mcps_load");
   }
   async logout() {
     this.authGeneration++;

@@ -14,13 +14,13 @@ export async function startLogin(api, { timeoutMs = 300000 } = {}) {
     async fetch(request) {
       const url = new URL(request.url);
       const received = url.searchParams.get("state") ?? "";
-      if (request.method !== "GET" || url.pathname !== "/callback" || consumed || !/^[A-Za-z0-9_-]{43}$/.test(received) || !timingSafeEqual(Buffer.from(received), Buffer.from(state))) return new Response("Invalid callback", { status: 400 });
+      if (request.method !== "GET" || url.pathname !== "/callback" || consumed || !/^[A-Za-z0-9_-]{43}$/.test(received) || !timingSafeEqual(Buffer.from(received), Buffer.from(state))) return new Response("Ссылка входа недействительна или уже использована. Вернитесь в приложение и выполните /login ещё раз.", { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
       consumed = true;
       try {
         const token = await api.request("/oauth/token", { method: "POST", body: { code: url.searchParams.get("code"), verifier, redirectURI }, signal: controller.signal });
         resolve(token.data);
         return new Response("Вход подтверждён. Вернитесь в приложение.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
-      } catch (error) { reject(error); return new Response("Вход не завершён. Повторите вход в приложении.", { status: 400 }); }
+      } catch (error) { reject(error); return new Response("Вход не завершён. Вернитесь в приложение, выполните /login ещё раз и выберите учётную запись.", { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }); }
       finally { clearTimeout(timer); setTimeout(() => server.stop(true), 100).unref(); }
     },
   });

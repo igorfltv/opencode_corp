@@ -4,6 +4,7 @@ import { installKiloWorkflows } from "./kilo-workflows.js";
 import { mcpEnvName } from "./mcp.js";
 import { syncOpenCodeMCP } from "./config.js";
 import { registerOpenCodeCommands } from "./commands.js";
+import { userError } from "./user-errors.js";
 
 const rpc = {
   id: "company.corporate",
@@ -24,7 +25,7 @@ export default {
   // Official Kilo clients load the same server plugin. The TUI has direct
   // commands; VS Code discovers the generated workflow files.
   async server(_context, settings) {
-    const { runtime } = await startKiloControl(settings);
+    const { runtime } = await startKiloControl(settings).catch((error) => { throw new Error(userError(error, "login")); });
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
     const { conflicts } = await installKiloWorkflows(options);
     if (conflicts.length) console.warn(`Существующие Kilo workflows сохранены: ${conflicts.join(", ")}`);
@@ -76,7 +77,7 @@ export default {
       rpcRegistration?.dispose?.();
       mcpRegistration?.dispose?.();
       release(registry, key, entry);
-      throw error;
+      throw new Error(userError(error, "login"));
     }
     let disposed = false;
     return () => {

@@ -63,7 +63,7 @@ test("failed setup cleans up and allows a later retry", async () => {
   let dispose;
   try {
     await atomicWrite(join(root, "opencode.jsonc"), "{}");
-    await expect(plugin.setup(context(root, calls, true))).rejects.toThrow("RPC unavailable");
+    await expect(plugin.setup(context(root, calls, true))).rejects.toThrow("Что сделать:");
     expect(registry().has(key)).toBe(false);
     expect(calls.mcpDisposed).toBe(1);
     dispose = await plugin.setup(context(root, calls));
@@ -85,7 +85,7 @@ test("failed runtime initialization does not poison the registry", async () => {
   let dispose;
   try {
     await atomicWrite(join(root, "opencode.jsonc"), "{ broken");
-    await expect(plugin.setup(context(root, calls))).rejects.toThrow("не изменён");
+    await expect(plugin.setup(context(root, calls))).rejects.toThrow("Проверьте синтаксис");
     expect(registry().has(key)).toBe(false);
     await atomicWrite(join(root, "opencode.jsonc"), "{}");
     dispose = await plugin.setup(context(root, calls));

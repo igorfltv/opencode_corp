@@ -56,16 +56,12 @@ test("Kilo browser flow applies provider, skills and MCP without exposing tokens
     expect((await fetch(selection, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: selectionCSRF, choice: "corp-code-review" }) })).status).toBe(200);
     await eventually(async () => (await readFile(join(options.skillsDir, "corp-code-review/SKILL.md"), "utf8").catch(() => "")).includes("corp-code-review"));
     await runtime.mcps("kilo-test");
-    const mcpSelection = await eventually(() => pages.find((url) => url.includes("/form/") && url !== selection));
-    const mcpSelectionHTML = await (await fetch(mcpSelection)).text();
-    const mcpSelectionCSRF = mcpSelectionHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
-    expect(mcpSelectionCSRF).toBeTruthy();
-    expect((await fetch(mcpSelection, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: mcpSelectionCSRF, choice: "jira" }) })).status).toBe(200);
     const secret = await eventually(() => pages.find((url) => url.includes("/secret/")));
     const secretHTML = await (await fetch(secret)).text();
+    expect(secretHTML).toContain('type="checkbox" name="mcp" value="jira"');
     const csrf = secretHTML.match(/name="csrf" value="([^"]+)"/)?.[1];
     expect(csrf).toBeTruthy();
-    const connected = await fetch(secret, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "demo-jira-token" }) });
+    const connected = await fetch(secret, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, mcp: "jira", "token:jira": "demo-jira-token" }) });
     expect(connected.status).toBe(200);
     expect((await connected.text()).includes("MCP добавлены в конфиг")).toBe(true);
     await eventually(async () => Boolean(parseConfig(await readFile(options.configPath, "utf8")).mcp?.corp_jira));
@@ -100,6 +96,14 @@ test("Kilo TUI registers seven direct slash commands", async () => {
     }, { profileDir: root, serverURL: "http://127.0.0.1:4310" });
     expect(commands.map((item) => item.slash.name)).toEqual(["login", "refresh_config", "skills_load", "mcps_load", "logout", "corp_status", "inference_status"]);
   } finally { dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("Kilo shows a usable link when the browser cannot open a login or MCP page", async () => {
+  const messages = [];
+  const bridge = new KiloBridge((item) => messages.push(item), async () => { throw new Error("browser unavailable"); });
+  await bridge.form("test", "Подключить MCP", [{ type: "external", url: "http://127.0.0.1:4321/secret/example" }]);
+  expect(messages[0].message).toContain("http://127.0.0.1:4321/secret/example");
+  expect(messages[0].message).toContain("Откройте страницу настройки");
 });
 
 test("Kilo VS Code opens login on startup and lets /login reopen it", async () => {

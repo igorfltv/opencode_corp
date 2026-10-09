@@ -1953,16 +1953,50 @@ async function installCommunity({ ids, client, skillsDir, configPath }) {
 // src/secret-page.js
 import { createServer } from "http";
 var maxToken = 512;
-function page(items, action, csrf) {
-  const fields = items.map((item, index) => `<section class="system"><div class="system-head"><span class="number">${String(index + 1).padStart(2, "0")}</span><div><h2>${escapeHTML(item.name)}</h2><p>${escapeHTML(item.description)}</p></div></div><label for="token-${index}">\u041B\u0438\u0447\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D</label><input id="token-${index}" name="token:${escapeHTML(item.id)}" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="${maxToken}" placeholder="\u0412\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0442\u043E\u043A\u0435\u043D \u0434\u043B\u044F ${escapeHTML(item.name)}" required></section>`).join("");
+var idPattern2 = /^[a-z][a-z0-9_-]{0,39}$/;
+function page(items, selected, action, csrf, scriptNonce) {
+  const cards = items.map((item, index) => {
+    const active = selected.has(item.id);
+    const id = escapeHTML(item.id);
+    const name = escapeHTML(item.name);
+    return `<article class="system${active ? " active" : ""}" data-connected="${active}"><div class="system-head"><input class="choice" id="mcp-${index}" type="checkbox" name="mcp" value="${id}"${active ? " checked" : ""}><label class="system-choice" for="mcp-${index}"><span class="number">${String(index + 1).padStart(2, "0")}</span><span class="system-copy"><strong>${name}</strong><span class="description">${escapeHTML(item.description)}</span></span><span class="status">${active ? "\u0423\u0436\u0435 \u0432\u044B\u0431\u0440\u0430\u043D" : "\u041D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D"}</span></label></div><div class="credentials"><label for="token-${index}">${active ? "\u041D\u043E\u0432\u044B\u0439 \u0442\u043E\u043A\u0435\u043D, \u0435\u0441\u043B\u0438 \u0445\u043E\u0442\u0438\u0442\u0435 \u0437\u0430\u043C\u0435\u043D\u0438\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0438\u0439" : "\u041B\u0438\u0447\u043D\u044B\u0439 \u0442\u043E\u043A\u0435\u043D"}</label><input id="token-${index}" name="token:${id}" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="${maxToken}" placeholder="${active ? "\u041E\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u043F\u0443\u0441\u0442\u044B\u043C, \u0447\u0442\u043E\u0431\u044B \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0438\u0439" : `\u0412\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0442\u043E\u043A\u0435\u043D \u0434\u043B\u044F ${name}`}"${active ? "" : " required"}><p class="hint">${active ? "\u0422\u0435\u043A\u0443\u0449\u0438\u0439 \u0442\u043E\u043A\u0435\u043D \u043D\u0435 \u043F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0435\u0442\u0441\u044F. \u041C\u043E\u0436\u043D\u043E \u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u044D\u0442\u043E \u043F\u043E\u043B\u0435 \u043F\u0443\u0441\u0442\u044B\u043C." : "\u0422\u043E\u043A\u0435\u043D \u043D\u0443\u0436\u0435\u043D \u0434\u043B\u044F \u043F\u0435\u0440\u0432\u043E\u0433\u043E \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F."}</p></div></article>`;
+  }).join("");
+  const script = `
+    const form = document.querySelector('form');
+    const button = document.querySelector('#submit');
+    const count = document.querySelector('#count');
+    const cards = [...document.querySelectorAll('.system')];
+    const hadSelected = ${selected.size > 0};
+    function update() {
+      let chosen = 0;
+      for (const card of cards) {
+        const choice = card.querySelector('.choice');
+        const token = card.querySelector('input[type=password]');
+        const wasSelected = card.dataset.connected === 'true';
+        card.classList.toggle('active', choice.checked);
+        card.querySelector('.status').textContent = choice.checked
+          ? (wasSelected ? '\u0423\u0436\u0435 \u0432\u044B\u0431\u0440\u0430\u043D' : '\u0411\u0443\u0434\u0435\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D')
+          : (wasSelected ? '\u0411\u0443\u0434\u0435\u0442 \u043E\u0442\u043A\u043B\u044E\u0447\u0451\u043D' : '\u041D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D');
+        token.disabled = !choice.checked;
+        token.required = choice.checked && !wasSelected;
+        if (choice.checked) chosen++;
+      }
+      count.textContent = chosen ? chosen + ' MCP \u0432\u044B\u0431\u0440\u0430\u043D\u043E' : '\u041D\u0438 \u043E\u0434\u043D\u043E\u0433\u043E MCP \u043D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043E';
+      button.textContent = chosen ? '\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C ' + chosen + ' MCP' : hadSelected ? '\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0432\u0441\u0435 MCP' : '\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 MCP';
+      button.disabled = !chosen && !hadSelected;
+    }
+    for (const card of cards) card.querySelector('.choice').addEventListener('change', update);
+    form.addEventListener('submit', () => { button.disabled = true; button.textContent = '\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0430\u0435\u043C\u2026'; });
+    update();`;
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 MCP</title><style>
-  :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 90% 0%,#d7ebe8 0,transparent 38%),#f3f6f7}main{width:min(720px,calc(100% - 32px));margin:56px auto 72px}.brand{display:flex;align-items:center;gap:12px;color:#264e54;font-size:13px;font-weight:750;letter-spacing:.11em;text-transform:uppercase}.mark{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#15766d;color:white;font-size:21px;font-weight:700;letter-spacing:0}.panel{margin-top:22px;padding:clamp(24px,5vw,44px);background:#fff;border:1px solid #e0e8e9;border-radius:24px;box-shadow:0 20px 60px #1c434b12}h1{margin:0;font-size:clamp(28px,4vw,38px);line-height:1.15;letter-spacing:-.035em}.lead{margin:15px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}.notice{display:flex;gap:12px;margin:26px 0 8px;padding:15px 17px;background:#ecf8f5;border:1px solid #cce8e1;border-radius:13px;color:#275f57;font-size:14px;line-height:1.45}.notice b{font-size:18px;line-height:1}.system{padding:25px 0;border-bottom:1px solid #e9eef0}.system-head{display:flex;gap:16px;align-items:flex-start}.number{display:grid;place-items:center;flex:none;width:35px;height:35px;border-radius:10px;background:#eaf1f2;color:#4b7278;font-size:12px;font-weight:750}.system h2{margin:1px 0 5px;font-size:19px;letter-spacing:-.015em}.system p{margin:0;color:#64747e;font-size:14px;line-height:1.45}.system label{display:block;margin:20px 0 8px;color:#344a54;font-size:13px;font-weight:700}.system input{display:block;width:100%;height:48px;padding:0 14px;border:1px solid #bdcdd1;border-radius:10px;background:#fbfdfd;color:#17212b;font:inherit;outline:none;transition:border-color .15s,box-shadow .15s}.system input:focus{border-color:#15766d;box-shadow:0 0 0 4px #15766d20}.system input::placeholder{color:#9ba9ae}.footer{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:28px}.footnote{max-width:350px;color:#667780;font-size:13px;line-height:1.45}button{border:0;border-radius:11px;padding:14px 23px;background:#126d64;color:#fff;font:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 6px 16px #126d642d}button:hover{background:#0d5a52}button:focus-visible{outline:3px solid #71cabe;outline-offset:3px}@media(max-width:600px){main{margin:24px auto 40px}.panel{border-radius:18px}.footer{align-items:stretch;flex-direction:column-reverse}button{width:100%}}
-  </style></head><body><main><div class="brand"><span class="mark">\u2197</span> \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="panel"><h1>\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0441\u0438\u0441\u0442\u0435\u043C\u044B</h1><p class="lead">\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0434\u043B\u044F ${items.length} ${items.length % 10 === 1 && items.length % 100 !== 11 ? "\u0441\u0438\u0441\u0442\u0435\u043C\u044B" : "\u0441\u0438\u0441\u0442\u0435\u043C"}. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442 MCP \u0432 \u0442\u0435\u043A\u0443\u0449\u0435\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435 OpenCode \u0438\u043B\u0438 Kilo.</p><div class="notice"><b>\u25C8</b><span>\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u044E\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C\u0443 \u043F\u043B\u0430\u0433\u0438\u043D\u0443. \u041E\u043D\u0438 \u043D\u0435 \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0432 \u0447\u0430\u0442\u0435 \u0438 \u043D\u0435 \u0431\u0443\u0434\u0443\u0442 \u0437\u0430\u043F\u0438\u0441\u0430\u043D\u044B \u0432 \u0444\u0430\u0439\u043B \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438.</span></div><form method="post" action="${action}" autocomplete="off"><input type="hidden" name="csrf" value="${csrf}">${fields}<div class="footer"><span class="footnote">\u041F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u043A\u0430 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F \u043F\u043E\u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0432\u0432\u0435\u0441\u0442\u0438 \u0442\u043E\u043A\u0435\u043D\u044B \u0441\u043D\u043E\u0432\u0430.</span><button type="submit">\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C ${items.length} MCP</button></div></form></div></main></body></html>`;
+  :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 90% 0%,#d7ebe8 0,transparent 38%),#f3f6f7}main{width:min(760px,calc(100% - 32px));margin:48px auto 72px}.brand{display:flex;align-items:center;gap:12px;color:#264e54;font-size:13px;font-weight:750;letter-spacing:.11em;text-transform:uppercase}.mark{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#15766d;color:white;font-size:21px;font-weight:700;letter-spacing:0}.panel{margin-top:22px;padding:clamp(24px,5vw,44px);background:#fff;border:1px solid #e0e8e9;border-radius:24px;box-shadow:0 20px 60px #1c434b12}h1{margin:0;font-size:clamp(28px,4vw,38px);line-height:1.15;letter-spacing:-.035em}.lead{margin:15px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}.notice{display:flex;gap:12px;margin:25px 0 15px;padding:15px 17px;background:#ecf8f5;border:1px solid #cce8e1;border-radius:13px;color:#275f57;font-size:14px;line-height:1.45}.notice b{font-size:18px;line-height:1}.system{margin-top:12px;border:1px solid #dce6e7;border-radius:15px;background:#fbfdfd;overflow:hidden;transition:border-color .15s,background .15s}.system.active{border-color:#8fc8be;background:#f7fcfa}.system-head{position:relative;display:flex;align-items:flex-start;padding:18px;gap:15px}.choice{width:21px;height:21px;margin:7px 0 0;flex:none;accent-color:#126d64;cursor:pointer}.system-choice{display:flex;align-items:flex-start;gap:13px;flex:1;min-width:0;cursor:pointer}.number{display:grid;place-items:center;flex:none;width:35px;height:35px;border-radius:10px;background:#eaf1f2;color:#4b7278;font-size:12px;font-weight:750}.system-copy{display:flex;flex-direction:column;min-width:0}.system-copy strong{font-size:18px;letter-spacing:-.015em}.description{margin-top:4px;color:#64747e;font-size:14px;line-height:1.45}.status{margin-left:auto;padding:5px 8px;border-radius:8px;background:#e9f4ef;color:#27725f;font-size:12px;font-weight:700;white-space:nowrap}.system:not([data-connected=true]) .status{background:#edf1f3;color:#64747e}.credentials{display:none;padding:0 18px 18px 54px}.system.active .credentials{display:block}.credentials label{display:block;margin:3px 0 8px;color:#344a54;font-size:13px;font-weight:700}.credentials input{display:block;width:100%;height:46px;padding:0 14px;border:1px solid #bdcdd1;border-radius:10px;background:white;color:#17212b;font:inherit;outline:none}.credentials input:focus{border-color:#15766d;box-shadow:0 0 0 4px #15766d20}.credentials input::placeholder{color:#87979e}.hint{margin:7px 0 0;color:#687a81;font-size:12px;line-height:1.4}.footer{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:27px}.footnote{max-width:370px;color:#667780;font-size:13px;line-height:1.45}.footnote strong{display:block;color:#344a54;margin-bottom:3px}button{border:0;border-radius:11px;padding:14px 22px;background:#126d64;color:#fff;font:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 6px 16px #126d642d}button:hover{background:#0d5a52}button:disabled{background:#a7b8b7;box-shadow:none;cursor:default}button:focus-visible,.choice:focus-visible{outline:3px solid #71cabe;outline-offset:3px}@media(max-width:600px){main{margin:24px auto 40px}.panel{border-radius:18px}.system-head{gap:10px;padding:14px}.system-choice{gap:10px;flex-wrap:wrap}.status{margin-left:0}.credentials{padding:0 14px 16px}.footer{align-items:stretch;flex-direction:column}button{width:100%}}
+  </style></head><body><main><div class="brand"><span class="mark">\u2197</span> \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="panel"><h1>\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C MCP</h1><p class="lead">\u041E\u0442\u043C\u0435\u0442\u044C\u0442\u0435 \u043D\u0443\u0436\u043D\u044B\u0435 \u0441\u0438\u0441\u0442\u0435\u043C\u044B \u0438 \u0432\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u043E\u043A\u0435\u043D \u0440\u044F\u0434\u043E\u043C \u0441 \u043A\u0430\u0436\u0434\u043E\u0439 \u043D\u043E\u0432\u043E\u0439 \u0441\u0438\u0441\u0442\u0435\u043C\u043E\u0439. \u0423\u0436\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 MCP \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u044B \u0437\u0430\u0440\u0430\u043D\u0435\u0435.</p><div class="notice"><b>\u25C8</b><span>\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u043E\u043B\u0443\u0447\u0430\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D. \u041E\u043D\u0438 \u043D\u0435 \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0432 \u0447\u0430\u0442\u0435 \u0438\u043B\u0438 \u0444\u0430\u0439\u043B\u0435 \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438.</span></div><form method="post" action="${action}" autocomplete="off"><input type="hidden" name="csrf" value="${csrf}">${cards}<div class="footer"><span class="footnote"><strong id="count">${selected.size} MCP \u0432\u044B\u0431\u0440\u0430\u043D\u043E</strong>\u0421\u043D\u0438\u043C\u0438\u0442\u0435 \u043E\u0442\u043C\u0435\u0442\u043A\u0443, \u0447\u0442\u043E\u0431\u044B \u043E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C MCP. \u041F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u043A\u0430 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F \u0442\u043E\u043A\u0435\u043D\u044B \u043D\u0443\u0436\u043D\u043E \u0432\u0432\u0435\u0441\u0442\u0438 \u0441\u043D\u043E\u0432\u0430.</span><button id="submit" type="submit">\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C</button></div></form></div></main><script nonce="${scriptNonce}">${script}</script></body></html>`;
 }
 function resultPage(outcome = {}) {
   const kind = ["success", "warning", "error"].includes(outcome.kind) ? outcome.kind : "warning";
-  const title = escapeHTML(outcome.title ?? "\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u043D\u044B");
+  const title = escapeHTML(outcome.title ?? "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 MCP \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B");
   const message = escapeHTML(outcome.message ?? "\u041F\u043B\u0430\u0433\u0438\u043D \u043E\u0431\u0440\u0430\u0431\u0430\u0442\u044B\u0432\u0430\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435.");
+  const retry = typeof outcome.retry === "string" ? `<p><a href="${escapeHTML(outcome.retry)}">\u0412\u0435\u0440\u043D\u0443\u0442\u044C\u0441\u044F \u043A \u0444\u043E\u0440\u043C\u0435</a></p>` : "";
   const icon = { success: "\u2713", warning: "\xB7", error: "!" }[kind];
   const items = Array.isArray(outcome.items) ? outcome.items.map((item) => {
     const state = item.status === "connected" ? "ok" : item.status === "failed" ? "bad" : "wait";
@@ -1970,13 +2004,17 @@ function resultPage(outcome = {}) {
   }).join("") : "";
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${title}</title><style>
   :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% 0%,#d7ebe8 0,transparent 40%),#f3f6f7}main{width:min(620px,calc(100% - 32px));margin:9vh auto 48px}.brand{color:#37666a;font-size:12px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}.card{margin-top:20px;padding:clamp(26px,5vw,42px);border:1px solid #e0e8e9;border-radius:24px;background:#fff;box-shadow:0 20px 60px #1c434b12}.icon{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;font-size:29px;font-weight:700;background:#e7f5ef;color:#16805c}.warning .icon{background:#fff4da;color:#a56b14}.error .icon{background:#fcebea;color:#bd5149}h1{margin:24px 0 0;font-size:clamp(28px,4vw,36px);line-height:1.15;letter-spacing:-.035em}p{margin:13px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}ul{list-style:none;margin:27px 0 0;padding:0;border-top:1px solid #edf0f1}li{display:flex;gap:13px;align-items:flex-start;padding:16px 0;border-bottom:1px solid #edf0f1}.dot{display:grid;place-items:center;flex:none;width:27px;height:27px;border-radius:9px;font-size:15px;font-weight:750}.dot.ok{background:#e7f5ef;color:#16805c}.dot.bad{background:#fcebea;color:#bd5149}.dot.wait{background:#edf1f3;color:#667780}strong{display:block;font-size:15px}small{display:block;margin-top:4px;color:#6a7981;font-size:13px;line-height:1.4}.footer{margin-top:25px;color:#7c8b92;font-size:13px}@media(max-width:600px){main{margin:24px auto}.card{border-radius:18px}}
-  </style></head><body><main class="${kind}"><div class="brand">\u2197 \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="card"><div class="icon">${icon}</div><h1>${title}</h1><p>${message}</p>${items ? `<ul>${items}</ul>` : ""}<div class="footer">\u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</div></div></main></body></html>`;
+  a{color:#126d64;font-weight:700}a:focus-visible{outline:3px solid #71cabe;outline-offset:3px}</style></head><body><main class="${kind}"><div class="brand">\u2197 \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="card"><div class="icon">${icon}</div><h1>${title}</h1><p>${message}</p>${retry}${items ? `<ul>${items}</ul>` : ""}<div class="footer">\u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</div></div></main></body></html>`;
 }
-async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
-  if (!Array.isArray(items) || !items.length || items.length > 30 || new Set(items.map((item) => item.id)).size !== items.length || items.some((item) => !/^[a-z][a-z0-9_-]{0,39}$/.test(item.id)))
-    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A MCP \u0434\u043B\u044F \u0432\u0432\u043E\u0434\u0430 \u0442\u043E\u043A\u0435\u043D\u043E\u0432");
+async function captureMCPSetup(items, { selected = [], timeoutMs = 300000, onSubmit } = {}) {
+  if (!Array.isArray(items) || !items.length || items.length > 30 || new Set(items.map((item) => item.id)).size !== items.length || items.some((item) => !idPattern2.test(item.id)))
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043A\u0430\u0442\u0430\u043B\u043E\u0433 MCP \u0434\u043B\u044F \u0444\u043E\u0440\u043C\u044B");
+  if (!Array.isArray(selected) || new Set(selected).size !== selected.length || selected.some((id) => !items.some((item) => item.id === id)))
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0432\u044B\u0431\u043E\u0440 MCP");
+  const selectedSet = new Set(selected);
   const nonce = random();
   const csrf = random();
+  const scriptNonce = random();
   let settled = false;
   let processing = false;
   let accept, reject;
@@ -1987,17 +2025,18 @@ async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
   const server = createServer(async (request, response) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     const path = `/secret/${nonce}`;
-    const headers = { "Cache-Control": "no-store", Pragma: "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
+    const headers = { "Cache-Control": "no-store", Pragma: "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${scriptNonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` };
+    const explain = (status, title, message, retry = null) => response.writeHead(status, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(resultPage({ kind: "warning", title, message, retry }));
     if (request.url !== path || request.headers.host !== `127.0.0.1:${server.address().port}`) {
-      response.writeHead(404, headers).end();
+      explain(404, "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", "\u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0438 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /mcps_load \u0435\u0449\u0451 \u0440\u0430\u0437.");
       return;
     }
     if (request.method === "GET") {
-      response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(page(items, path, csrf));
+      response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(page(items, selectedSet, path, csrf, scriptNonce));
       return;
     }
     if (request.method !== "POST" || request.headers.origin && request.headers.origin !== origin && request.headers.origin !== "null" || request.headers["content-type"]?.split(";")[0] !== "application/x-www-form-urlencoded") {
-      response.writeHead(403, headers).end();
+      explain(403, "\u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043D\u0435 \u043F\u0440\u0438\u043D\u044F\u0442\u0430", "\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0444\u043E\u0440\u043C\u0443 \u0447\u0435\u0440\u0435\u0437 /mcps_load \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0438 \u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u044C\u0442\u0435 \u0435\u0451 \u0438\u0437 \u0442\u043E\u0439 \u0436\u0435 \u0432\u043A\u043B\u0430\u0434\u043A\u0438.");
       return;
     }
     let input = "";
@@ -2005,37 +2044,55 @@ async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
       for await (const chunk of request) {
         input += chunk;
         if (input.length > 65536) {
-          response.writeHead(413, headers).end();
+          explain(413, "\u0414\u0430\u043D\u043D\u044B\u0435 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u0438\u0435", "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0434\u043B\u0438\u043D\u0443 \u0432\u0432\u0435\u0434\u0451\u043D\u043D\u044B\u0445 \u0442\u043E\u043A\u0435\u043D\u043E\u0432 \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0443.", path);
           return;
         }
       }
     } catch {
       if (!response.writableEnded)
-        response.writeHead(400, headers).end();
+        explain(400, "\u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043F\u0440\u0435\u0440\u0432\u0430\u043B\u0430\u0441\u044C", "\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0444\u043E\u0440\u043C\u0443 \u0441\u043D\u043E\u0432\u0430 \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0443.", path);
       return;
     }
     const form = new URLSearchParams(input);
     if (form.getAll("csrf").length !== 1 || form.get("csrf") !== csrf) {
-      response.writeHead(403, headers).end();
+      explain(403, "\u0424\u043E\u0440\u043C\u0430 \u0443\u0441\u0442\u0430\u0440\u0435\u043B\u0430", "\u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0438 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /mcps_load \u0435\u0449\u0451 \u0440\u0430\u0437.");
       return;
     }
-    const expected = new Set(items.map((item) => `token:${item.id}`));
-    if ([...form.keys()].some((key) => key !== "csrf" && !expected.has(key)) || [...expected].some((key) => form.getAll(key).length !== 1 || !form.get(key) || form.get(key).length > maxToken || /[\r\n]/.test(form.get(key)))) {
-      response.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }).end("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0443.");
+    const ids = form.getAll("mcp");
+    const known = new Set(items.map((item) => item.id));
+    const validKeys = new Set(["csrf", "mcp", ...items.map((item) => `token:${item.id}`)]);
+    const tokens = new Map;
+    let invalid = ids.length > items.length || new Set(ids).size !== ids.length || ids.some((id) => !known.has(id)) || [...form.keys()].some((key) => !validKeys.has(key));
+    for (const item of items) {
+      const values = form.getAll(`token:${item.id}`);
+      if (values.length > 1 || values.some((value2) => value2.length > maxToken || /[\r\n]/.test(value2))) {
+        invalid = true;
+        continue;
+      }
+      const value = values[0] ?? "";
+      if (ids.includes(item.id)) {
+        if (value)
+          tokens.set(item.id, value);
+        else if (!selectedSet.has(item.id))
+          invalid = true;
+      } else if (value)
+        invalid = true;
+    }
+    if (invalid) {
+      explain(400, "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u043E\u0440 MCP", "\u0414\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u043D\u043E\u0432\u043E\u0433\u043E MCP \u043D\u0443\u0436\u0435\u043D \u0442\u043E\u043A\u0435\u043D. \u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u043A \u0444\u043E\u0440\u043C\u0435, \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043E\u0442\u043C\u0435\u0442\u043A\u0438 \u0438 \u0432\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0441\u043D\u043E\u0432\u0430.", path);
       return;
     }
     if (settled || processing) {
-      response.writeHead(409, headers).end();
+      explain(409, "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0443\u0436\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F", "\u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u0430 \u0432 \u043F\u0435\u0440\u0432\u043E\u0439 \u0432\u043A\u043B\u0430\u0434\u043A\u0435. \u0415\u0441\u043B\u0438 \u043E\u043D \u043D\u0435 \u043F\u043E\u044F\u0432\u0438\u0442\u0441\u044F, \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /mcps_load \u0435\u0449\u0451 \u0440\u0430\u0437.");
       return;
     }
     processing = true;
-    const tokens = new Map(items.map((item) => [item.id, form.get(`token:${item.id}`)]));
     try {
-      const outcome = await onSubmit?.(tokens);
+      const outcome = await onSubmit?.(ids, tokens);
       if (!settled) {
         response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(resultPage(outcome));
         settled = true;
-        accept(tokens);
+        accept({ ids, tokens });
       }
     } catch (error) {
       if (!settled) {
@@ -2054,7 +2111,7 @@ async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
   const timer = setTimeout(() => {
     if (!settled) {
       settled = true;
-      reject(new Error("\u0412\u0440\u0435\u043C\u044F \u0432\u0432\u043E\u0434\u0430 \u0442\u043E\u043A\u0435\u043D\u043E\u0432 \u0438\u0441\u0442\u0435\u043A\u043B\u043E"));
+      reject(new Error("\u0412\u0440\u0435\u043C\u044F \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 MCP \u0438\u0441\u0442\u0435\u043A\u043B\u043E"));
       server.close();
     }
   }, timeoutMs);
@@ -2063,7 +2120,7 @@ async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
   return { url: `http://127.0.0.1:${server.address().port}/secret/${nonce}`, result, cancel: () => {
     if (!settled) {
       settled = true;
-      reject(new Error("\u0412\u0432\u043E\u0434 \u0442\u043E\u043A\u0435\u043D\u043E\u0432 \u043E\u0442\u043C\u0435\u043D\u0451\u043D"));
+      reject(new Error("\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430 MCP \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u0430"));
       server.close();
     }
   } };
@@ -2089,7 +2146,7 @@ async function startLogin(api, { timeoutMs = 300000 } = {}) {
       const url = new URL(request.url);
       const received = url.searchParams.get("state") ?? "";
       if (request.method !== "GET" || url.pathname !== "/callback" || consumed || !/^[A-Za-z0-9_-]{43}$/.test(received) || !timingSafeEqual(Buffer.from(received), Buffer.from(state)))
-        return new Response("Invalid callback", { status: 400 });
+        return new Response("\u0421\u0441\u044B\u043B\u043A\u0430 \u0432\u0445\u043E\u0434\u0430 \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u044C\u043D\u0430 \u0438\u043B\u0438 \u0443\u0436\u0435 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u0430. \u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0438 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login \u0435\u0449\u0451 \u0440\u0430\u0437.", { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
       consumed = true;
       try {
         const token = await api.request("/oauth/token", { method: "POST", body: { code: url.searchParams.get("code"), verifier, redirectURI }, signal: controller.signal });
@@ -2097,7 +2154,7 @@ async function startLogin(api, { timeoutMs = 300000 } = {}) {
         return new Response("\u0412\u0445\u043E\u0434 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D. \u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
       } catch (error) {
         reject(error);
-        return new Response("\u0412\u0445\u043E\u0434 \u043D\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0432\u0445\u043E\u0434 \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0438.", { status: 400 });
+        return new Response("\u0412\u0445\u043E\u0434 \u043D\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D. \u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435, \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login \u0435\u0449\u0451 \u0440\u0430\u0437 \u0438 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0443\u0447\u0451\u0442\u043D\u0443\u044E \u0437\u0430\u043F\u0438\u0441\u044C.", { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
       } finally {
         clearTimeout(timer);
         setTimeout(() => server.stop(true), 100).unref();
@@ -2197,6 +2254,49 @@ class OpenCodeBridge {
   }
 }
 
+// src/user-errors.js
+var action = (reason, steps) => `${reason}
+\u0427\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C:
+${steps.map((step, index) => `${index + 1}. ${step}`).join(`
+`)}`;
+function userError(error, command = "login") {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes(`
+\u0427\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C:
+`))
+    return message;
+  const retry = `\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /${command}.`;
+  if (/\u0421\u0435\u0441\u0441\u0438\u044F \u0438\u0441\u0442\u0435\u043A\u043B\u0430|Unauthorized|HTTP 401|\u041D\u0443\u0436\u0435\u043D \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u0439 \/login/i.test(message))
+    return action("\u0421\u0440\u043E\u043A \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0439 \u0441\u0435\u0441\u0441\u0438\u0438 \u0438\u0441\u0442\u0451\u043A.", ["\u0412\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login.", retry]);
+  if (/\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0435\u0440: HTTP 403/i.test(message))
+    return action("\u0414\u043B\u044F \u044D\u0442\u043E\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E.", ["\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u0443\u044E \u0443\u0447\u0451\u0442\u043D\u0443\u044E \u0437\u0430\u043F\u0438\u0441\u044C \u0447\u0435\u0440\u0435\u0437 /corp_status.", "\u0415\u0441\u043B\u0438 \u0434\u043E\u0441\u0442\u0443\u043F \u043D\u0443\u0436\u0435\u043D, \u043E\u0431\u0440\u0430\u0442\u0438\u0442\u0435\u0441\u044C \u043A \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443."]);
+  if (/\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0435\u0440: HTTP 429/i.test(message))
+    return action("\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0438\u043B \u0447\u0438\u0441\u043B\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u043E\u0432.", ["\u041F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435 \u043C\u0438\u043D\u0443\u0442\u0443.", retry]);
+  if (/\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0435\u0440: HTTP 5\d\d|fetch failed|Failed to fetch|ETIMEDOUT|ECONNREFUSED|TimeoutError|timed out|abort due to timeout/i.test(message))
+    return action("\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0435\u0440 \u0441\u0435\u0439\u0447\u0430\u0441 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0438\u043B\u0438 \u043D\u0435 \u043E\u0442\u0432\u0435\u0442\u0438\u043B \u0432\u043E\u0432\u0440\u0435\u043C\u044F.", ["\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u0435\u0442\u044C \u0438 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0441\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0441\u0435\u0440\u0432\u0435\u0440\u0430.", retry]);
+  if (/\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0435\u0440: HTTP \d{3}|\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D.*(\u043A\u0430\u0442\u0430\u043B\u043E\u0433|\u0432\u0435\u0440\u0441\u0438|\u043C\u043E\u0434\u0435\u043B|\u043F\u0440\u043E\u0432\u0430\u0439\u0434\u0435\u0440|\u043B\u0438\u043C\u0438\u0442|\u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446|\u0442\u043E\u043A\u0435\u043D)|\u041E\u0442\u0432\u0435\u0442 \u0441\u0435\u0440\u0432\u0435\u0440\u0430 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439|\u0421\u0435\u0440\u0432\u0435\u0440 \u043F\u0440\u0438\u0441\u043B\u0430\u043B|\u0421\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u043A\u043E\u043D\u0444\u0438\u0433\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u043E\u0441\u044C/i.test(message))
+    return action("\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0435\u0440\u043D\u0443\u043B \u0434\u0430\u043D\u043D\u044B\u0435, \u043A\u043E\u0442\u043E\u0440\u044B\u0435 \u043F\u043B\u0430\u0433\u0438\u043D \u043D\u0435 \u043C\u043E\u0436\u0435\u0442 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C.", ["\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u0442\u0435\u043A\u0443\u0449\u0443\u044E \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044E \u0431\u0435\u0437 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439.", "\u0421\u043E\u043E\u0431\u0449\u0438\u0442\u0435 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443 \u043E \u0441\u0431\u043E\u0435 \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043A\u043E\u043C\u0430\u043D\u0434\u0443 \u043F\u043E\u0441\u043B\u0435 \u0438\u0441\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0441\u0435\u0440\u0432\u0435\u0440\u0430."]);
+  if (/jsonc|JSONC|\u043A\u043E\u043D\u0444\u0438\u0433.*\u043E\u0448\u0438\u0431\u043A|plugins \u0434\u043E\u043B\u0436\u0435\u043D|\u0441\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A.*\u0441\u0441\u044B\u043B\u043A/i.test(message))
+    return action("\u041B\u043E\u043A\u0430\u043B\u044C\u043D\u0430\u044F \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u0438\u0441\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F.", ["\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u0438\u043D\u0442\u0430\u043A\u0441\u0438\u0441 opencode.jsonc \u0438\u043B\u0438 kilo.jsonc \u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u0443\u044E \u043A\u043E\u043F\u0438\u044E.", retry]);
+  if (/\u0438\u0437\u043C\u0435\u043D\u0451\u043D \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E|\u0424\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0451\u043D \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E|\u0443\u0436\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442 \u0438 \u043D\u0435 \u0443\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442\u0441\u044F|\u0443\u0436\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D \u0434\u0440\u0443\u0433\u0438\u043C \u0441\u043F\u043E\u0441\u043E\u0431\u043E\u043C|\u041F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D \u043C\u0430\u0440\u043A\u0435\u0440/i.test(message))
+    return action("\u041D\u0430\u0439\u0434\u0435\u043D \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0439 \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0451\u043D\u043D\u044B\u0439 \u043F\u0430\u043A\u0435\u0442; \u043F\u043B\u0430\u0433\u0438\u043D \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u043B \u0432\u0430\u0448\u0438 \u0444\u0430\u0439\u043B\u044B.", ["\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0438 \u0441\u0434\u0435\u043B\u0430\u0439\u0442\u0435 \u043A\u043E\u043F\u0438\u044E \u043D\u0443\u0436\u043D\u044B\u0445 \u0444\u0430\u0439\u043B\u043E\u0432.", "\u041F\u043E\u0441\u043B\u0435 \u0443\u0441\u0442\u0440\u0430\u043D\u0435\u043D\u0438\u044F \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u0430 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /skills_load."]);
+  if (/\u041A\u043E\u043D\u0442\u0440\u043E\u043B\u044C\u043D\u0430\u044F \u0441\u0443\u043C\u043C\u0430 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B\u0430|\u041F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D \u0444\u0430\u0439\u043B \u043F\u043E\u0441\u0442\u0430\u0432\u043A\u0438/i.test(message))
+    return action("\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0446\u0435\u043B\u043E\u0441\u0442\u043D\u043E\u0441\u0442\u0438 \u043F\u0430\u043A\u0435\u0442\u0430 \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0430.", ["\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u0438\u043B\u0438 \u043F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D \u0438\u0437 \u0434\u043E\u0432\u0435\u0440\u0435\u043D\u043D\u043E\u0433\u043E \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430.", "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /skills_load."]);
+  if (/\u0424\u043E\u0440\u043C\u0430 .*\u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430/i.test(message))
+    return action("\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430.", ["\u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u0435 \u0438\u043B\u0438 \u0437\u0430\u043A\u0440\u043E\u0439\u0442\u0435 \u0442\u0435\u043A\u0443\u0449\u0443\u044E \u0444\u043E\u0440\u043C\u0443.", retry]);
+  if (/\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C|\u0412\u0445\u043E\u0434 \u043E\u0442\u043C\u0435\u043D\u0451\u043D|\u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 MCP \u0438\u0441\u0442\u0435\u043A\u043B\u043E|\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430 MCP \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u0430|\u0432\u0440\u0435\u043C\u044F \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F \u0438\u0441\u0442\u0435\u043A\u043B\u043E/i.test(message))
+    return action("\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u043F\u0440\u0435\u0440\u0432\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u0441\u043B\u0435 \u0441\u043C\u0435\u043D\u044B \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u0438\u043B\u0438 \u0438\u0441\u0442\u0435\u0447\u0435\u043D\u0438\u044F \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F.", ["\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u0445\u043E\u0434 \u0447\u0435\u0440\u0435\u0437 /corp_status.", retry]);
+  if (/\u0431\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u043B\u0441\u044F/i.test(message))
+    return action("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0432\u0445\u043E\u0434\u0430 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.", ["\u0420\u0430\u0437\u0440\u0435\u0448\u0438\u0442\u0435 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044E \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u0431\u0440\u0430\u0443\u0437\u0435\u0440.", "\u0412\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login \u0435\u0449\u0451 \u0440\u0430\u0437 \u0438 \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0441\u0441\u044B\u043B\u043A\u0443 \u0438\u0437 \u0444\u043E\u0440\u043C\u044B \u0432\u0445\u043E\u0434\u0430."]);
+  if (/\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D Kilo \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D/i.test(message))
+    return action("\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D Kilo \u0441\u0435\u0439\u0447\u0430\u0441 \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D.", ["\u041F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 Kilo \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435, \u0447\u0442\u043E \u043F\u043B\u0430\u0433\u0438\u043D \u0430\u043A\u0442\u0438\u0432\u0435\u043D.", retry]);
+  if (/Kilo \u043D\u0435 \u0441\u043C\u043E\u0433 \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044E/i.test(message))
+    return action("Kilo \u043D\u0435 \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u043B \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D\u043D\u0443\u044E \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044E.", ["\u041F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 Kilo.", "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0447\u0435\u0440\u0435\u0437 /corp_status."]);
+  if (/OpenCode API: HTTP|\u043D\u0435\u0442 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u044F \u0441 OpenCode|\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 OpenCode/i.test(message))
+    return action("OpenCode \u043D\u0435 \u043F\u0440\u0438\u043D\u0438\u043C\u0430\u0435\u0442 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 \u043F\u043B\u0430\u0433\u0438\u043D\u0430.", ["\u041F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 OpenCode \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435, \u0447\u0442\u043E \u043F\u043B\u0430\u0433\u0438\u043D \u0430\u043A\u0442\u0438\u0432\u0435\u043D.", retry]);
+  return action(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u044C /${command}.`, ["\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043A\u043E\u043C\u0430\u043D\u0434\u0443.", "\u0415\u0441\u043B\u0438 \u0441\u0431\u043E\u0439 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0441\u044F, \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u043F\u043B\u0430\u0433\u0438\u043D\u0430 \u0438 \u043E\u0431\u0440\u0430\u0442\u0438\u0442\u0435\u0441\u044C \u043A \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443."]);
+}
+
 // src/runtime.js
 var lights = { green: "\uD83D\uDFE2", yellow: "\uD83D\uDFE1", red: "\uD83D\uDD34", unknown: "\u26AA" };
 var validToken2 = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{32,256}$/.test(value);
@@ -2278,10 +2378,12 @@ class CorporateRuntime {
       try {
         await this.ensureFreshTokens(true);
       } catch (error) {
-        if (error instanceof Unauthorized)
+        if (error instanceof Unauthorized) {
           await this.invalidate();
-        else {
-          await this.notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0434\u043E\u0441\u0442\u0443\u043F \u043A \u043C\u043E\u0434\u0435\u043B\u0438; \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0435\u043C \u043F\u043E\u043F\u044B\u0442\u043A\u0443", "warning");
+          await this.notice(userError(error, "login"), "warning");
+        } else {
+          await this.notice(`${userError(error, "login")}
+\u041F\u043B\u0430\u0433\u0438\u043D \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0442\u043E\u043A\u0435\u043D\u0430.`, "warning");
           this.scheduleTokenRenewal(5000);
         }
       }
@@ -2357,7 +2459,7 @@ class CorporateRuntime {
       } catch (error) {
         if (error instanceof Unauthorized)
           await this.invalidate();
-        this.state.lastError = error instanceof Unauthorized ? error.message : "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043D\u0444\u0438\u0433; \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0430 \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F";
+        this.state.lastError = userError(error, "refresh_config");
         await this.persistState();
         throw error;
       }
@@ -2372,10 +2474,10 @@ class CorporateRuntime {
     try {
       await this.refresh();
       this.syncFailed = false;
-    } catch {
+    } catch (error) {
       if (!this.syncFailed) {
         this.syncFailed = true;
-        await this.notice(this.state.lastError ?? "\u041D\u0443\u0436\u0435\u043D \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u0439 /login", "warning");
+        await this.notice(userError(error, "refresh_config"), "warning");
       }
     }
   }
@@ -2430,7 +2532,7 @@ class CorporateRuntime {
         throw new Error("\u041D\u0435\u0442 \u0441\u0432\u0435\u0436\u0438\u0445 \u0434\u0430\u043D\u043D\u044B\u0445 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438");
       next = { level: data.level, message: data.message, queue: data.queue, checkedAt: data.observedAt };
     } catch (error) {
-      next = { level: "unknown", message: error instanceof Unauthorized ? "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F /login" : "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D", checkedAt: Date.now() };
+      next = { level: "unknown", message: error instanceof Unauthorized ? "\u0421\u0435\u0441\u0441\u0438\u044F \u0438\u0441\u0442\u0435\u043A\u043B\u0430. \u0412\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login." : "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u0435\u0442\u044C \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /inference_status.", checkedAt: Date.now() };
       if (error instanceof Unauthorized)
         await this.queue(() => this.authGeneration === polledGeneration ? this.invalidate() : undefined);
     } finally {
@@ -2447,13 +2549,14 @@ class CorporateRuntime {
     if (changed)
       await this.notice(`${lights[next.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441: ${next.message}`, { green: "success", yellow: "warning", red: "error", unknown: "warning" }[next.level]);
   }
-  track(promise, sessionID, interactiveError = true) {
+  track(promise, sessionID, interactiveError = true, command = "login") {
     this.jobs.add(promise);
     promise.catch(async (error) => {
       if (!this.abort.signal.aborted) {
-        if (interactiveError)
-          await this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D", error.message).catch(() => {});
-        await this.notice(error.message, "error");
+        const message = userError(error, command);
+        if (interactiveError && sessionID)
+          await this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D", message).catch(() => {});
+        await this.notice(message, "error");
       }
     }).finally(() => this.jobs.delete(promise));
   }
@@ -2464,7 +2567,7 @@ class CorporateRuntime {
       await this.login(null);
       return true;
     } catch (error) {
-      await this.notice(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u0432\u0445\u043E\u0434 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438: ${error.message}. \u0412\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login.`, "warning");
+      await this.notice(userError(error, "login"), "warning");
       return false;
     }
   }
@@ -2552,7 +2655,7 @@ class CorporateRuntime {
           await this.bridge.cancel(sessionID, form.id);
         this.loginFlow = null;
       }
-    })(), sessionID);
+    })(), sessionID, true, "login");
   }
   async skills(sessionID, reload) {
     if (this.forms.has(sessionID))
@@ -2610,43 +2713,24 @@ class CorporateRuntime {
         this.forms.delete(sessionID);
         await this.bridge.cancel(sessionID, form.id);
       }
-    })(), sessionID);
+    })(), sessionID, true, "skills_load");
   }
   async mcps(sessionID, reload = async () => {}) {
     if (this.forms.has(sessionID))
-      throw new Error("\u0424\u043E\u0440\u043C\u0430 \u0432\u044B\u0431\u043E\u0440\u0430 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430");
+      throw new Error("\u0424\u043E\u0440\u043C\u0430 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 MCP \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430");
     await this.apiToken();
     const accountGeneration = this.authGeneration;
     const catalog = await this.refreshMCPCatalog();
     if (!catalog.length)
       return this.options.client === "kilo" ? this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", "\u0414\u043B\u044F \u0432\u0430\u0448\u0435\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 MCP.") : this.notice("\u0414\u043B\u044F \u0432\u0430\u0448\u0435\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 MCP.", "info");
     const selected = this.mcpConfigs.map(({ name }) => name.slice(5));
-    const form = await this.bridge.form(sessionID, "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", [{
-      type: "multiselect",
-      key: "mcps",
-      title: "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 MCP",
-      description: `\u0414\u043B\u044F \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u0445 MCP \u043E\u0442\u043A\u0440\u043E\u0435\u0442\u0441\u044F \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0430\u044F \u0444\u043E\u0440\u043C\u0430 \u0432\u0432\u043E\u0434\u0430 \u0438\u043B\u0438 \u0437\u0430\u043C\u0435\u043D\u044B \u0442\u043E\u043A\u0435\u043D\u043E\u0432, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
-      custom: false,
-      minItems: 0,
-      default: selected,
-      options: catalog.map((item) => ({ value: item.id, label: item.name, description: item.description }))
-    }]);
     const controller = new AbortController;
-    this.forms.set(sessionID, { form, controller });
+    this.forms.set(sessionID, { controller });
     this.track((async () => {
       try {
         const signal = AbortSignal.any([this.abort.signal, controller.signal, AbortSignal.timeout(300000)]);
-        const answer = await this.bridge.wait(sessionID, form.id, signal);
-        if (answer === null)
-          return;
-        const ids = answer.mcps ?? [];
-        const requested = ids.map((id) => {
-          const item = catalog.find((entry) => entry.id === id);
-          if (!item)
-            throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D MCP \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
-          return item;
-        });
-        const apply = async (tokens) => {
+        const apply = async (ids, tokens) => {
+          const requested = ids.map((id) => catalog.find((entry) => entry.id === id));
           await this.queue(async () => {
             if (signal.aborted || this.authGeneration !== accountGeneration || !this.authenticated())
               throw new Error("\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C; \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 /mcps_load \u0441\u043D\u043E\u0432\u0430");
@@ -2685,32 +2769,31 @@ class CorporateRuntime {
             await this.notice(`${states ? "MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B" : "MCP \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B \u0432 \u043A\u043E\u043D\u0444\u0438\u0433"}: ${names}`, "success");
           return { kind: states ? "success" : "warning", title: states ? "MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B" : "MCP \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B \u0432 \u043A\u043E\u043D\u0444\u0438\u0433", message: states ? "\u0421\u0438\u0441\u0442\u0435\u043C\u044B \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0432 OpenCode." : "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0432 Kilo.", items };
         };
-        if (requested.length) {
-          const page2 = await captureSecrets(requested, { onSubmit: apply });
-          const cancel = () => page2.cancel();
+        const page2 = await captureMCPSetup(catalog, { selected, onSubmit: apply });
+        const cancel = () => page2.cancel();
+        if (signal.aborted)
+          cancel();
+        else
           signal.addEventListener("abort", cancel, { once: true });
-          let notice;
-          try {
-            if (process.env.CORP_NO_BROWSER === "1")
-              notice = await this.bridge.form(sessionID, "\u0422\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 MCP", [{ type: "external", key: "tokens", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443 \u0434\u043B\u044F \u0442\u043E\u043A\u0435\u043D\u043E\u0432", url: page2.url }]);
-            else
-              await this.open(page2.url).catch(async () => {
-                notice = await this.bridge.form(sessionID, "\u0422\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 MCP", [{ type: "external", key: "tokens", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443 \u0434\u043B\u044F \u0442\u043E\u043A\u0435\u043D\u043E\u0432", url: page2.url }]);
-              });
-            await page2.result;
-          } finally {
-            signal.removeEventListener("abort", cancel);
-            page2.cancel();
-            if (notice)
-              await this.bridge.cancel(sessionID, notice.id);
-          }
-        } else
-          await apply(new Map);
+        let notice;
+        try {
+          if (process.env.CORP_NO_BROWSER === "1")
+            notice = await this.bridge.form(sessionID, "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", [{ type: "external", key: "mcps", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0443 MCP", url: page2.url }]);
+          else
+            await this.open(page2.url).catch(async () => {
+              notice = await this.bridge.form(sessionID, "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", [{ type: "external", key: "mcps", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0443 MCP", url: page2.url }]);
+            });
+          await page2.result;
+        } finally {
+          signal.removeEventListener("abort", cancel);
+          page2.cancel();
+          if (notice)
+            await this.bridge.cancel(sessionID, notice.id);
+        }
       } finally {
         this.forms.delete(sessionID);
-        await this.bridge.cancel(sessionID, form.id);
       }
-    })(), sessionID, false);
+    })(), sessionID, false, "mcps_load");
   }
   async logout() {
     this.authGeneration++;
@@ -2790,8 +2873,12 @@ class KiloBridge {
     const id = random();
     const csrf = random();
     const field = fields.find((item) => item.type === "multiselect");
-    if (!field)
+    if (!field) {
+      const external = fields.find((item) => item.type === "external" && typeof item.url === "string");
+      if (external)
+        this.toast({ title, message: `\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435: ${external.url}`, variant: "info", duration: 15000 });
       return { id };
+    }
     const options = new Map(field.options.map((item) => [item.value, item]));
     let accept;
     const result = new Promise((resolve2) => {
@@ -2800,8 +2887,9 @@ class KiloBridge {
     const server = createServer2(async (request, response) => {
       const url2 = `http://127.0.0.1:${server.address().port}/form/${id}`;
       const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
+      const explain = (status, title2, detail) => response.writeHead(status, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><html lang="ru"><meta charset="utf-8"><title>${escape(title2)}</title><body style="font:16px system-ui;max-width:620px;margin:6vh auto;padding:24px"><h1>${escape(title2)}</h1><p>${escape(detail)}</p></body></html>`);
       if (request.url !== `/form/${id}` || request.headers.host !== `127.0.0.1:${server.address().port}`) {
-        response.writeHead(404, headers).end();
+        explain(404, "\u0424\u043E\u0440\u043C\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", "\u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 Kilo \u0438 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /skills_load \u0435\u0449\u0451 \u0440\u0430\u0437.");
         return;
       }
       if (request.method === "GET") {
@@ -2812,25 +2900,25 @@ class KiloBridge {
       }
       const origin = new URL(url2).origin;
       if (request.method !== "POST" || request.headers.origin && request.headers.origin !== origin && request.headers.origin !== "null" || request.headers["content-type"]?.split(";")[0] !== "application/x-www-form-urlencoded") {
-        response.writeHead(403, headers).end();
+        explain(403, "\u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043D\u0435 \u043F\u0440\u0438\u043D\u044F\u0442\u0430", "\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0444\u043E\u0440\u043C\u0443 \u0447\u0435\u0440\u0435\u0437 /skills_load \u0432 Kilo \u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u044C\u0442\u0435 \u0435\u0451 \u0438\u0437 \u0442\u043E\u0439 \u0436\u0435 \u0432\u043A\u043B\u0430\u0434\u043A\u0438.");
         return;
       }
       let body = "";
       for await (const chunk of request) {
         body += chunk;
         if (body.length > 65536) {
-          response.writeHead(413, headers).end();
+          explain(413, "\u0414\u0430\u043D\u043D\u044B\u0435 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u0438\u0435", "\u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 Kilo \u0438 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /skills_load \u0435\u0449\u0451 \u0440\u0430\u0437.");
           return;
         }
       }
       const form = new URLSearchParams(body);
       if (form.getAll("csrf").length !== 1 || form.get("csrf") !== csrf) {
-        response.writeHead(403, headers).end();
+        explain(403, "\u0424\u043E\u0440\u043C\u0430 \u0443\u0441\u0442\u0430\u0440\u0435\u043B\u0430", "\u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0432 Kilo \u0438 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /skills_load \u0435\u0449\u0451 \u0440\u0430\u0437.");
         return;
       }
       const values = form.getAll("choice");
       if (new Set(values).size !== values.length || values.some((value) => !options.has(value))) {
-        response.writeHead(400, headers).end();
+        explain(400, "\u0412\u044B\u0431\u043E\u0440 \u043D\u0435 \u043F\u0440\u0438\u043D\u044F\u0442", "\u0412\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u043A \u0444\u043E\u0440\u043C\u0435, \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u043F\u0430\u043A\u0435\u0442\u044B \u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u044C\u0442\u0435 \u0435\u0451 \u0441\u043D\u043E\u0432\u0430.");
         return;
       }
       response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><html lang=ru><meta charset=utf-8><p>\u0412\u044B\u0431\u043E\u0440 \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</p></html>");
@@ -2927,7 +3015,8 @@ function registerOpenCodeCommands(context, runtime) {
           }
           await runOpenCodeCommand(runtime, context, name, sessionID);
         } catch (error) {
-          await runtime.bridge.message(sessionID, `/${name}`, error.message);
+          const message = userError(error, name);
+          await runtime.bridge.message(sessionID, `/${name}`, message).catch(() => runtime.notice(message, "error"));
         }
       } });
   });
@@ -3029,7 +3118,7 @@ ${lights[status.load.level]} ${status.load.message}`);
       const result = await execute(command);
       response.writeHead(200, headers).end(JSON.stringify(result));
     } catch (error) {
-      response.writeHead(500, headers).end(JSON.stringify({ error: error.message ?? "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430" }));
+      response.writeHead(500, headers).end(JSON.stringify({ error: userError(error, command) }));
     }
   });
   try {
@@ -3073,7 +3162,8 @@ import { fileURLToPath } from "node:url";
 
 const names = new Set(${JSON.stringify(commands.map(({ name }) => name))});
 const name = process.argv[2];
-if (!names.has(name)) throw new Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430");
+if (!names.has(name)) { console.log("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u043A\u043E\u043C\u0430\u043D\u0434\u0430. \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043A\u043E\u043C\u0430\u043D\u0434\u0443 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430 Kilo."); process.exit(0); }
+try {
 const directory = dirname(fileURLToPath(import.meta.url));
 const files = (await readdir(directory)).filter((file) => /^control-\d+\.json$/.test(file));
 files.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
@@ -3098,15 +3188,16 @@ for (const file of files) {
   control = await active(file);
   if (control) break;
 }
-if (!control) throw new Error("\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D Kilo \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D");
+if (!control) { console.log("\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D Kilo \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D. \u0427\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C: 1. \u041F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 Kilo. 2. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0443 \u043F\u043B\u0430\u0433\u0438\u043D\u0430 \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /" + name + "."); process.exit(0); }
 const response = await fetch("http://127.0.0.1:" + control.port + "/command/" + name, {
   method: "POST", headers: { Authorization: "Bearer " + control.secret },
   signal: AbortSignal.timeout(310000),
 });
 const result = await response.json();
-if (!response.ok) throw new Error(result.error || "\u041A\u043E\u043C\u0430\u043D\u0434\u0430 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0430");
+if (!response.ok) { console.log(typeof result.error === "string" && result.error.includes("\u0427\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C:") ? result.error : "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u044C /" + name + ". \u0427\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C: 1. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043A\u043E\u043C\u0430\u043D\u0434\u0443. 2. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u043F\u043B\u0430\u0433\u0438\u043D\u0430."); process.exit(0); }
 if (typeof result.message !== "string") throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 \u043F\u043B\u0430\u0433\u0438\u043D\u0430");
 console.log(result.message);
+} catch { console.log("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u0432\u044F\u0437\u0430\u0442\u044C\u0441\u044F \u0441 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u043C \u043F\u043B\u0430\u0433\u0438\u043D\u043E\u043C Kilo. \u0427\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C: 1. \u041F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 Kilo. 2. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /" + name + "."); }
 `;
 function quote(path) {
   if (/[\r\n`]/.test(path))
@@ -3164,7 +3255,9 @@ function release(registry, key2, entry) {
 var plugin_default = {
   id: "company-corporate",
   async server(_context, settings) {
-    const { runtime } = await startKiloControl(settings);
+    const { runtime } = await startKiloControl(settings).catch((error) => {
+      throw new Error(userError(error, "login"));
+    });
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
     const { conflicts } = await installKiloWorkflows(options);
     if (conflicts.length)
@@ -3220,7 +3313,7 @@ var plugin_default = {
       rpcRegistration?.dispose?.();
       mcpRegistration?.dispose?.();
       release(registry, key2, entry);
-      throw error;
+      throw new Error(userError(error, "login"));
     }
     let disposed = false;
     return () => {
