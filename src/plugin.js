@@ -24,11 +24,19 @@ export default {
   // Official Kilo clients load the same server plugin. The TUI has direct
   // commands; VS Code discovers the generated workflow files.
   async server(_context, settings) {
-    await startKiloControl(settings);
+    const { runtime } = await startKiloControl(settings);
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
     const { conflicts } = await installKiloWorkflows(options);
     if (conflicts.length) console.warn(`Существующие Kilo workflows сохранены: ${conflicts.join(", ")}`);
-    return {};
+    return {
+      // Kilo can retain a provider instance across /login and token rotation.
+      // Supply the current token for each request, including the model response
+      // that follows a VS Code workflow command.
+      "chat.headers": async ({ model }, output) => {
+        if (model.providerID !== "corporate") return;
+        output.headers.Authorization = `Bearer ${await runtime.inferenceToken()}`;
+      },
+    };
   },
   async setup(context) {
     const options = optionsFromEnv(process.env, context.options);

@@ -24,7 +24,7 @@ try {
   await mkdir(project, { recursive: true });
   const configPath = join(profile, "kilo.jsonc");
   const stateDir = join(profile, "corporate-state");
-  await atomicWrite(configPath, JSON.stringify({ plugin: [root], share: "disabled" }, null, 2));
+  await atomicWrite(configPath, JSON.stringify({ plugin: [[root, { serverURL: emulator.baseURL }]], share: "disabled" }, null, 2));
   const api = new CorporateAPI(emulator.baseURL);
   const browserLog = join(directory, "browser-urls.log");
   const browserBin = join(directory, "browser-bin");
@@ -94,10 +94,29 @@ try {
     assert.equal(response.status, 200, `${name}: HTTP ${response.status}`);
     return response.json();
   };
+  const expired = await fetch(`${emulator.baseURL}/admin/state`, {
+    method: "POST", headers: { "x-demo-admin": emulator.adminToken, "Content-Type": "application/json" },
+    body: JSON.stringify({ expire: true }),
+  });
+  assert.equal(expired.status, 200);
   const repeatedLogin = runCommand("login");
   const repeatedLoginURL = await eventually(async () => (await readFile(browserLog, "utf8")).split("\n").find((line) => line.includes("/oauth/authorize") && line !== loginURL), "Kilo /login did not reopen the browser flow");
   assert.equal((await fetch(await approveBrowser(repeatedLoginURL))).status, 200);
   await repeatedLogin;
+  const session = await request("/session", "POST");
+  const answer = await fetch(`${url}/session/${session.id}/message`, {
+    method: "POST", headers: {
+      Authorization: `Basic ${Buffer.from(`kilo:${password}`).toString("base64")}`,
+      "x-kilo-directory": project, "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model: { providerID: "corporate", modelID: "demo-code" }, parts: [{ type: "text", text: "Проверка после повторного входа" }] }),
+    signal: AbortSignal.timeout(30000),
+  });
+  assert.equal(answer.status, 200, `Kilo corporate message: HTTP ${answer.status}`);
+  const message = await answer.json();
+  assert.equal(message.info.error, undefined, `Kilo corporate message failed: ${JSON.stringify(message.info.error)}`);
+  assert(message.parts.some((part) => part.type === "text" && part.text.includes("локальный эмулятор")));
+  console.log("PASS Kilo model uses the new inference token after /login revokes the old session");
   const status = await fetch(`http://127.0.0.1:${control.port}/command/corp_status`, { method: "POST", headers: { Authorization: `Bearer ${control.secret}` } });
   assert.equal(status.status, 200);
   assert((await status.json()).message.includes("Engineering"));
@@ -132,8 +151,11 @@ try {
   await request("/instance/reload", "POST");
   await eventually(async () => (await request("/config")).provider?.corporate?.models?.["demo-code"]?.name === "Company Code V2", "Kilo did not reload the changed provider config");
   await request("/skill");
-  const skills = (await api.request("/api/skills", { token: login.accessToken })).data.skills;
-  await installSkills({ ids: ["corp-code-review"], catalog: skills, api, token: login.accessToken, skillsDir: join(profile, "skills") });
+  const catalogFlow = await startLogin(api);
+  assert.equal((await fetch(await approveBrowser(catalogFlow.url))).status, 200);
+  const catalogLogin = await catalogFlow.result;
+  const skills = (await api.request("/api/skills", { token: catalogLogin.accessToken })).data.skills;
+  await installSkills({ ids: ["corp-code-review"], catalog: skills, api, token: catalogLogin.accessToken, skillsDir: join(profile, "skills") });
   await request("/instance/reload", "POST");
   await eventually(async () => (await request("/skill")).some((item) => item.name === "corp-code-review"), "Kilo did not discover the installed skill");
   assert((await runCommand("logout")).message.includes("Выход выполнен"));

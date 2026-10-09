@@ -67,6 +67,11 @@ export class CorporateRuntime {
   authenticated() { return Boolean(this.credential && (this.credential.refreshExpiresAt ?? this.credential.expiresAt) > Date.now()); }
   token() { if (!this.authenticated() || this.credential.expiresAt <= Date.now()) throw new Unauthorized(); return this.credential.accessToken; }
   async apiToken() { await this.ensureFreshTokens(); return this.token(); }
+  async inferenceToken() {
+    await this.ensureFreshTokens();
+    if (!this.authenticated() || this.credential.inferenceExpiresAt <= Date.now()) throw new Unauthorized();
+    return this.credential.inferenceToken;
+  }
   scheduleTokenRenewal(retryMs) {
     clearTimeout(this.tokenTimer);
     if (!this.authenticated() || !this.credential.refreshToken) return;
@@ -84,7 +89,7 @@ export class CorporateRuntime {
   }
   async ensureFreshTokens(force = false) {
     if (!this.authenticated()) throw new Unauthorized();
-    if (!this.credential.refreshToken || (!force && this.tokenRenewAt > Date.now() && this.credential.expiresAt > Date.now())) return;
+    if (!this.credential.refreshToken || (!force && this.tokenRenewAt > Date.now() && this.credential.expiresAt > Date.now() && this.credential.inferenceExpiresAt > Date.now())) return;
     if (this.renewing) return this.renewing;
     const generation = this.authGeneration;
     const old = this.credential;

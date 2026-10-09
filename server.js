@@ -2260,6 +2260,12 @@ class CorporateRuntime {
     await this.ensureFreshTokens();
     return this.token();
   }
+  async inferenceToken() {
+    await this.ensureFreshTokens();
+    if (!this.authenticated() || this.credential.inferenceExpiresAt <= Date.now())
+      throw new Unauthorized;
+    return this.credential.inferenceToken;
+  }
   scheduleTokenRenewal(retryMs) {
     clearTimeout(this.tokenTimer);
     if (!this.authenticated() || !this.credential.refreshToken)
@@ -2284,7 +2290,7 @@ class CorporateRuntime {
   async ensureFreshTokens(force = false) {
     if (!this.authenticated())
       throw new Unauthorized;
-    if (!this.credential.refreshToken || !force && this.tokenRenewAt > Date.now() && this.credential.expiresAt > Date.now())
+    if (!this.credential.refreshToken || !force && this.tokenRenewAt > Date.now() && this.credential.expiresAt > Date.now() && this.credential.inferenceExpiresAt > Date.now())
       return;
     if (this.renewing)
       return this.renewing;
@@ -3150,12 +3156,18 @@ function release(registry, key2, entry) {
 var plugin_default = {
   id: "company-corporate",
   async server(_context, settings) {
-    await startKiloControl(settings);
+    const { runtime } = await startKiloControl(settings);
     const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
     const { conflicts } = await installKiloWorkflows(options);
     if (conflicts.length)
       console.warn(`\u0421\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0435 Kilo workflows \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B: ${conflicts.join(", ")}`);
-    return {};
+    return {
+      "chat.headers": async ({ model }, output) => {
+        if (model.providerID !== "corporate")
+          return;
+        output.headers.Authorization = `Bearer ${await runtime.inferenceToken()}`;
+      }
+    };
   },
   async setup(context) {
     const options = optionsFromEnv(process.env, context.options);
