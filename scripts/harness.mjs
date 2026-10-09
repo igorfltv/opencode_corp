@@ -15,7 +15,7 @@ export async function eventually(fn, timeout = 12000) {
   }
   throw new Error(`Timed out${last ? `: ${last.message}` : ""}`);
 }
-export async function launch({ directory, port = 0, refreshMs = 3600000, loadPollMs = 30000, quiet = true, pluginSpec = root, pluginTimeout = 12000, envOverrides = {} } = {}) {
+export async function launch({ directory, port = 0, refreshMs = 3600000, loadPollMs = 30000, quiet = true, pluginSpec = root, pluginTimeout = 12000, envOverrides = {}, emulatorOptions = {} } = {}) {
   directory = resolve(directory ?? join(root, ".demo"));
   const profile = join(directory, "config", "opencode");
   const project = join(directory, "project");
@@ -29,7 +29,7 @@ export async function launch({ directory, port = 0, refreshMs = 3600000, loadPol
   "plugins": [${JSON.stringify(pluginSpec)}]
 }\n`);
   if (!await exists(join(project, "README.md"))) await writeFile(join(project, "README.md"), "# Корпоративный OpenCode\n\nСтраница входа открывается автоматически. Это отдельная папка для демонстрации.\n");
-  const emulator = createEmulator({ port });
+  const emulator = createEmulator({ port, ...emulatorOptions });
   const connectionFile = join(profile, "opencode-connection.json");
   const environment = {
     ...process.env, XDG_CONFIG_HOME: join(directory, "config"), XDG_DATA_HOME: join(directory, "data"),

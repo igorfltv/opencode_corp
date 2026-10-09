@@ -34,7 +34,7 @@ try {
   console.log("PASS installed OpenCode opens SSO automatically and loads its provider without /login");
   await demo.stop(); demo = null;
 
-  emulator = createEmulator({ port: 0 });
+  emulator = createEmulator({ port: 0, inferenceTokenMs: 2500, apiTokenMs: 60000 });
   const profile = join(directory, "kilo", "config", "kilo");
   const project = join(directory, "kilo", "project");
   await mkdir(profile, { recursive: true });
@@ -77,7 +77,18 @@ try {
     return (await response.json()).provider?.corporate ?? null;
   }, 15000);
   assert.equal(config.npm, "@ai-sdk/openai-compatible");
+  const tokenPath = join(profile, "corporate-state", "access-token");
+  const firstToken = await readFile(tokenPath, "utf8");
+  const rotatedToken = await eventually(async () => {
+    const current = await readFile(tokenPath, "utf8");
+    return current !== firstToken ? current : null;
+  }, 10000);
+  assert.equal((await fetch(`${emulator.baseURL}/v1/models`, { headers: { Authorization: `Bearer ${rotatedToken}` } })).status, 200);
+  const renewedConfig = await (await fetch(`${kiloURL}/config`, { headers, signal: AbortSignal.timeout(5000) })).json();
+  assert(renewedConfig.provider.corporate.options.apiKey === rotatedToken, "Kilo did not reload the rotated provider token");
+  assert.equal(await Bun.file(join(profile, "corporate-state", "credential.json")).exists(), false);
   console.log("PASS installed Kilo opens SSO automatically and reloads its provider without /login");
+  console.log("PASS installed Kilo rotates its inference token without a persisted refresh token");
 } catch (error) {
   console.error(error);
   console.error(`Diagnostic profile retained at ${directory}`);

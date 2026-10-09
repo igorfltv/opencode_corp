@@ -8,8 +8,8 @@ import { syncKiloMCP } from "./config.js";
 import { atomicWrite, random, serial } from "./io.js";
 import { commandByName } from "./commands.js";
 
-const key = Symbol.for("company.kilo.corporate.control.v3");
-const legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
+const key = Symbol.for("company.kilo.corporate.control.v6");
+const legacyKeys = [Symbol.for("company.kilo.corporate.control.v5"), Symbol.for("company.kilo.corporate.control.v4"), Symbol.for("company.kilo.corporate.control.v3"), Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
 
 export async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
@@ -38,6 +38,7 @@ async function boot(options, adapters) {
     bridge,
     open: adapters.open,
     notify: adapters.notify,
+    reloadProvider: adapters.reloadProvider,
     syncMCP: (configs) => syncKiloMCP(options.configPath, options.stateDir, configs),
   });
   await runtime.start();
@@ -45,7 +46,7 @@ async function boot(options, adapters) {
   const queue = serial();
   const execute = (command) => queue(async () => {
     messages = [];
-    if (command !== "login" && !runtime.authenticated()) return { message: "Сначала выполните /login.", reload: false };
+    if (command !== "login" && command !== "skills_load" && !runtime.authenticated()) return { message: "Сначала выполните /login.", reload: false };
     if (command === "login") await runtime.login("kilo-vscode");
     if (command === "refresh_config") {
       const state = await runtime.refresh();

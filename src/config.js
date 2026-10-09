@@ -35,10 +35,13 @@ export async function applyConfig({ configPath, stateDir, envelope, serverURL, p
   let text = await readFile(configPath, "utf8");
   const current = parseConfig(text);
   const source = clean.config.providers.corporate;
-  const provider = client === "kilo"
-    ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey: `{file:${join(stateDir, "access-token")}}` }, models: source.models }
-    : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey: `{file:${join(stateDir, "access-token")}}` } };
   const field = client === "kilo" ? "provider" : "providers";
+  const currentRef = client === "kilo" ? current[field]?.corporate?.options?.apiKey : current[field]?.corporate?.settings?.apiKey;
+  const references = ["access-token", "access-token-next"].map((name) => `{file:${join(stateDir, name)}}`);
+  const apiKey = references.includes(currentRef) ? currentRef : references[0];
+  const provider = client === "kilo"
+    ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey }, models: source.models }
+    : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey } };
   const changed = JSON.stringify(current[field]?.corporate) !== JSON.stringify(provider);
   if (changed) {
     const backup = `${configPath}.before-corporate.bak`;
@@ -48,6 +51,22 @@ export async function applyConfig({ configPath, stateDir, envelope, serverURL, p
     await atomicWrite(configPath, text);
   }
   return { revision: clean.revision, fingerprint, changed, checkedAt: new Date().toISOString() };
+}
+export async function rotateProviderTokenReference(configPath, stateDir, client = "opencode") {
+  const original = await readFile(configPath, "utf8");
+  const current = parseConfig(original);
+  const field = client === "kilo" ? "provider" : "providers";
+  const path = [field, "corporate", client === "kilo" ? "options" : "settings", "apiKey"];
+  const provider = current[field]?.corporate;
+  if (!provider) return false;
+  const oldRef = client === "kilo" ? provider.options?.apiKey : provider.settings?.apiKey;
+  const first = `{file:${join(stateDir, "access-token")}}`;
+  const second = `{file:${join(stateDir, "access-token-next")}}`;
+  if (oldRef !== first && oldRef !== second) throw new Error("Некорректная ссылка на токен провайдера");
+  const updated = applyEdits(original, modify(original, path, oldRef === first ? second : first, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  parseConfig(updated);
+  await atomicWrite(configPath, updated);
+  return true;
 }
 export async function removeProvider(configPath, client = "opencode") {
   let text = await readFile(configPath, "utf8");

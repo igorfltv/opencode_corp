@@ -21,19 +21,40 @@ const json = (data, status = 200, headers = {}) => Response.json(data, { status,
 const html = (text, nonce = "", callbackOrigin = "") => new Response(text, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self' ${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'` } });
 async function body(request, limit = 65536) { fail(!request.headers.get("content-type")?.includes("application/json"), "Expected JSON"); const text = await request.text(); fail(text.length > limit, "Body too large"); try { return JSON.parse(text); } catch { throw new HTTPError(400, "Invalid JSON"); } }
 
-export function createEmulator({ port = 4310 } = {}) {
-  const requests = new Map(), codes = new Map(), tokens = new Map();
+export function createEmulator({ port = 4310, apiTokenMs = 10 * 60000, inferenceTokenMs = 5 * 60000, sessionMs = 8 * 3600000, inferenceRequestsPerMinute = 60 } = {}) {
+  const requests = new Map(), codes = new Map(), apiTokens = new Map(), inferenceTokens = new Map(), refreshTokens = new Map();
+  const sessions = new Set();
   const adminToken = random();
   const state = { revision: 1, modelName: "Company Code Demo", context: 128000, level: "green", offline: false, audit: [] };
   const audit = (action, detail = "") => { state.audit.push({ at: new Date().toISOString(), action, detail }); if (state.audit.length > 200) state.audit.shift(); };
+  const prune = () => {
+    const now = Date.now();
+    for (const [hash, item] of apiTokens) if (item.expiresAt <= now || item.session.revoked) apiTokens.delete(hash);
+    for (const [hash, item] of inferenceTokens) if (item.expiresAt <= now || item.session.revoked) inferenceTokens.delete(hash);
+    for (const [hash, session] of refreshTokens) if (session.expiresAt <= now || session.revoked) refreshTokens.delete(hash);
+    for (const session of sessions) if (session.expiresAt <= now || session.revoked) sessions.delete(session);
+  };
   const configuration = () => ({ revision: state.revision, config: { providers: { corporate: {
     name: "Company Inference", settings: { baseURL: `${baseURL}/v1` }, models: { "demo-code": { name: state.modelName, limit: { context: state.context, output: 8192 } } },
   } } } });
-  const authorize = (request) => {
+  const revoke = (session) => { session.revoked = true; audit("session.revoked", session.user.id); };
+  const issue = (session) => {
+    prune();
+    const now = Date.now();
+    const accessToken = random(), inferenceToken = random(), refreshToken = random();
+    const expiresAt = Math.min(now + apiTokenMs, session.expiresAt);
+    const inferenceExpiresAt = Math.min(now + inferenceTokenMs, session.expiresAt);
+    apiTokens.set(digest(accessToken), { session, expiresAt });
+    inferenceTokens.set(digest(inferenceToken), { session, expiresAt: inferenceExpiresAt });
+    session.refreshHash = digest(refreshToken);
+    refreshTokens.set(session.refreshHash, session);
+    return { accessToken, expiresAt, inferenceToken, inferenceExpiresAt, refreshToken, refreshExpiresAt: session.expiresAt, user: session.user };
+  };
+  const authorize = (request, audience = "api") => {
     const raw = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
-    const credential = tokens.get(digest(raw));
-    fail(!credential || credential.expiresAt <= Date.now(), "Unauthorized", 401);
-    return { ...credential, hash: digest(raw) };
+    const credential = (audience === "inference" ? inferenceTokens : apiTokens).get(digest(raw));
+    fail(!credential || credential.expiresAt <= Date.now() || credential.session.revoked || credential.session.expiresAt <= Date.now(), "Unauthorized", 401);
+    return credential.session;
   };
   const server = Bun.serve({ hostname: "127.0.0.1", port, maxRequestBodySize: 16777216,
     async fetch(request) {
@@ -56,9 +77,9 @@ export function createEmulator({ port = 4310 } = {}) {
               fail(typeof patch.modelName !== "string" || !patch.modelName.trim() || patch.modelName.length > 100 || !Number.isInteger(patch.context) || patch.context < 8192 || patch.context > 2000000, "Invalid configuration");
               state.modelName = patch.modelName; state.context = patch.context; state.revision++; audit("config.published", `v${state.revision}`);
             }
-            if (patch.expire) { for (const token of tokens.values()) token.expiresAt = 0; audit("tokens.expired"); }
+            if (patch.expire) { for (const session of sessions) revoke(session); audit("tokens.expired"); }
           } else fail(request.method !== "GET", "Method not allowed", 405);
-          return json({ ...state, queue: { green: 2, yellow: 24, red: 130 }[state.level], activeTokens: [...tokens.values()].filter((token) => token.expiresAt > Date.now()).length });
+          return json({ ...state, queue: { green: 2, yellow: 24, red: 130 }[state.level], activeTokens: [...sessions].filter((session) => !session.revoked && session.expiresAt > Date.now()).length });
         }
         if (path === "/oauth/requests" && request.method === "POST") {
           const input = await body(request);
@@ -92,11 +113,25 @@ export function createEmulator({ port = 4310 } = {}) {
           const challenge = createHash("sha256").update(input.verifier).digest("base64url");
           fail(!timingSafeEqual(Buffer.from(entry.challenge), Buffer.from(challenge)), "Invalid PKCE verifier");
           codes.delete(input.code);
-          const accessToken = random(); const expiresAt = Date.now() + 8 * 3600000;
-          tokens.set(digest(accessToken), { user: entry.user, expiresAt }); audit("login", entry.user.id);
-          return json({ accessToken, expiresAt, user: entry.user, configuration: configuration() });
+          const session = { user: entry.user, expiresAt: Date.now() + sessionMs, revoked: false, refreshHash: null, inferenceWindow: Date.now(), inferenceCount: 0 };
+          sessions.add(session); audit("login", entry.user.id);
+          return json({ ...issue(session), configuration: configuration() });
         }
-        if (path === "/oauth/revoke" && request.method === "POST") { const identity = authorize(request); tokens.delete(identity.hash); audit("logout", identity.user.id); return json({ revoked: true }); }
+        if (path === "/oauth/refresh" && request.method === "POST") {
+          const input = await body(request);
+          fail(typeof input.refreshToken !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(input.refreshToken), "Unauthorized", 401);
+          const hash = digest(input.refreshToken), session = refreshTokens.get(hash);
+          fail(!session || session.revoked || session.expiresAt <= Date.now(), "Unauthorized", 401);
+          if (session.refreshHash !== hash) { revoke(session); fail(true, "Refresh token replay", 401); }
+          audit("session.refreshed", session.user.id);
+          return json(issue(session));
+        }
+        if (path === "/oauth/revoke" && request.method === "POST") {
+          const input = await body(request);
+          const session = typeof input.refreshToken === "string" ? refreshTokens.get(digest(input.refreshToken)) : authorize(request);
+          fail(!session || session.refreshHash !== digest(input.refreshToken ?? "") && input.refreshToken !== undefined, "Unauthorized", 401);
+          revoke(session); audit("logout", session.user.id); return json({ revoked: true });
+        }
         if (path.startsWith("/mcp/")) {
           const service = mcps.find((item) => path === `/mcp/${item.id}`);
           fail(!service, "MCP not found", 404);
@@ -113,7 +148,7 @@ export function createEmulator({ port = 4310 } = {}) {
           return json(response);
         }
         if (path.startsWith("/api/") || path.startsWith("/v1/")) {
-          const identity = authorize(request); fail(state.offline, "Simulated API outage", 503);
+          const identity = authorize(request, path.startsWith("/v1/") ? "inference" : "api"); fail(state.offline, "Simulated API outage", 503);
           if (path === "/api/config" && request.method === "GET") {
             const etag = `"config-${state.revision}"`; audit("config.read", `v${state.revision}`);
             if (request.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": "no-store" } });
@@ -129,6 +164,10 @@ export function createEmulator({ port = 4310 } = {}) {
           if (path === "/v1/models" && request.method === "GET") return json({ object: "list", data: [{ id: "demo-code", object: "model", owned_by: "company-demo" }] });
           if (path === "/v1/chat/completions" && request.method === "POST") {
             const input = await body(request, 16777216);
+            fail(input.model !== "demo-code", "Model not allowed", 403);
+            if (Date.now() - identity.inferenceWindow >= 60000) { identity.inferenceWindow = Date.now(); identity.inferenceCount = 0; }
+            fail(identity.inferenceCount >= inferenceRequestsPerMinute, "Inference quota exceeded", 429);
+            identity.inferenceCount++;
             const content = "Это локальный эмулятор, а не настоящая модель. Используйте /login, /refresh_config, /skills_load и /corp_status для проверки корпоративного плагина.";
             const id = `chatcmpl-${random()}`;
             const common = { id, created: Math.floor(Date.now() / 1000), model: "demo-code" };

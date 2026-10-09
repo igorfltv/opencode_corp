@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { createEmulator } from "../server/emulator.js";
 import { CorporateAPI, Unauthorized } from "../src/api.js";
 import { startLogin } from "../src/login.js";
-import { applyConfig, parseConfig, removeProvider, syncKiloMCP, syncOpenCodeMCP, validateConfig } from "../src/config.js";
+import { applyConfig, parseConfig, removeProvider, rotateProviderTokenReference, syncKiloMCP, syncOpenCodeMCP, validateConfig } from "../src/config.js";
 import { installSkills, validateCatalog } from "../src/skills.js";
 import { optionsFromEnv, CorporateRuntime } from "../src/runtime.js";
 import { atomicWrite, digest, exists, random } from "../src/io.js";
@@ -16,7 +16,7 @@ import { approveBrowser } from "./helpers.js";
 
 const cleanups = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
-function server() { const result = createEmulator({ port: 0 }); cleanups.push(() => result.stop()); return result; }
+function server(options = {}) { const result = createEmulator({ port: 0, ...options }); cleanups.push(() => result.stop()); return result; }
 async function folder() { const dir = await mkdtemp(join(tmpdir(), "corporate-test-")); cleanups.push(() => rm(dir, { force: true, recursive: true })); return dir; }
 async function signIn(emulator, account = "engineer") {
   const api = new CorporateAPI(emulator.baseURL);
@@ -39,9 +39,86 @@ test("browser login checks state and completes PKCE without a token in the URL",
   expect((await fetch(callback)).status).toBe(200);
   const result = await flow.result;
   expect(result.accessToken.length).toBe(43);
+  expect(result.inferenceToken.length).toBe(43);
+  expect(result.refreshToken.length).toBe(43);
+  expect(result.inferenceExpiresAt - Date.now()).toBeLessThanOrEqual(5 * 60000);
   expect(callback).not.toContain(result.accessToken);
+  expect(callback).not.toContain(result.refreshToken);
   expect(result.configuration.revision).toBe(1);
   expect(JSON.stringify(emulator.state.audit)).not.toContain(result.accessToken);
+});
+
+test("inference token has a separate audience, expires, and cannot refresh", async () => {
+  const emulator = server({ inferenceTokenMs: 120, apiTokenMs: 1000 }), api = new CorporateAPI(emulator.baseURL);
+  const login = await signIn(emulator);
+  expect((await api.request("/api/config", { token: login.accessToken })).data.revision).toBe(1);
+  expect((await api.request("/v1/models", { token: login.inferenceToken })).data.data[0].id).toBe("demo-code");
+  await expect(api.request("/v1/models", { token: login.accessToken })).rejects.toThrow("/login");
+  await expect(api.request("/api/config", { token: login.inferenceToken })).rejects.toThrow("/login");
+  await expect(api.request("/oauth/refresh", { method: "POST", body: { refreshToken: login.inferenceToken } })).rejects.toThrow("/login");
+  await Bun.sleep(150);
+  await expect(api.request("/v1/models", { token: login.inferenceToken })).rejects.toThrow("/login");
+  const renewed = (await api.request("/oauth/refresh", { method: "POST", body: { refreshToken: login.refreshToken } })).data;
+  expect(renewed.refreshToken).not.toBe(login.refreshToken);
+  expect((await api.request("/v1/models", { token: renewed.inferenceToken })).data.data[0].id).toBe("demo-code");
+  await expect(api.request("/oauth/refresh", { method: "POST", body: { refreshToken: login.refreshToken } })).rejects.toThrow("/login");
+  await expect(api.request("/v1/models", { token: renewed.inferenceToken })).rejects.toThrow("/login");
+});
+
+test("the gateway enforces model allowlist and per-session inference quota", async () => {
+  const emulator = server({ inferenceRequestsPerMinute: 1 }), login = await signIn(emulator);
+  const request = (model) => fetch(`${emulator.baseURL}/v1/chat/completions`, { method: "POST",
+    headers: { Authorization: `Bearer ${login.inferenceToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "Hi" }] }),
+  });
+  expect((await request("other-model")).status).toBe(403);
+  expect((await request("demo-code")).status).toBe(200);
+  expect((await request("demo-code")).status).toBe(429);
+});
+
+test("runtime rotates inference token without writing the refresh token", async () => {
+  const emulator = server(), root = await folder(), configPath = join(root, "opencode.jsonc"), stateDir = join(root, "corporate-state");
+  await atomicWrite(configPath, "{}");
+  const login = await signIn(emulator);
+  let reloads = 0;
+  const runtime = new CorporateRuntime(optionsFromEnv({}, { profileDir: root, serverURL: emulator.baseURL }), {
+    reloadProvider: async () => { reloads++; }, notify: async () => {},
+  });
+  try {
+    runtime.credential = login;
+    await atomicWrite(join(stateDir, "access-token"), login.inferenceToken);
+    await runtime.ensureFreshTokens(true);
+    const current = await readFile(join(stateDir, "access-token"), "utf8");
+    expect(current).not.toBe(login.inferenceToken);
+    expect(current).toBe(runtime.credential.inferenceToken);
+    expect(reloads).toBe(1);
+    expect(await exists(join(stateDir, "credential.json"))).toBeNull();
+    expect(await readFile(join(stateDir, "access-token"), "utf8")).not.toContain(runtime.credential.refreshToken);
+  } finally { runtime.dispose(); }
+});
+
+test("a late refresh response cannot restore credentials after logout", async () => {
+  const root = await folder(), configPath = join(root, "opencode.jsonc"), stateDir = join(root, "corporate-state");
+  await atomicWrite(configPath, "{}");
+  const old = { accessToken: random(), expiresAt: Date.now() + 60000, inferenceToken: random(), inferenceExpiresAt: Date.now() + 60000, refreshToken: random(), refreshExpiresAt: Date.now() + 3600000, user: { name: "Test" } };
+  const renewed = { ...old, accessToken: random(), inferenceToken: random(), refreshToken: random() };
+  let resolveRefresh, refreshStarted;
+  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const runtime = new CorporateRuntime({ configPath, stateDir }, { api: { request: async (path) => {
+    if (path === "/oauth/refresh") { refreshStarted(); return new Promise((resolve) => { resolveRefresh = resolve; }); }
+    return { data: { revoked: true } };
+  } }, notify: async () => {}, reloadProvider: async () => {} });
+  try {
+    runtime.credential = old;
+    await atomicWrite(join(stateDir, "access-token"), old.inferenceToken);
+    const pending = runtime.ensureFreshTokens(true);
+    await started;
+    await runtime.logout();
+    resolveRefresh({ data: renewed });
+    await pending;
+    expect(runtime.credential).toBeNull();
+    expect(await readFile(join(stateDir, "access-token"), "utf8")).toBe("");
+  } finally { runtime.dispose(); }
 });
 
 test("authorization codes cannot be replayed or exchanged without the verifier", async () => {
@@ -115,6 +192,32 @@ test("one browser form captures only requested MCP tokens and never echoes them"
   } finally { page.cancel(); }
 });
 
+test("browser waits for MCP setup and shows a safe result page", async () => {
+  let submitted = false;
+  const page = await captureSecrets([{ id: "jira", name: "Jira", description: "Задачи" }], {
+    timeoutMs: 2000,
+    onSubmit: async (tokens) => {
+      expect(tokens.get("jira")).toBe("private-token");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      submitted = true;
+      return { kind: "error", title: "Не все MCP подключились", message: "Попробуйте снова", items: [{ name: "<Jira>", status: "failed", detail: "Токен отклонён (HTTP 401)" }] };
+    },
+  });
+  try {
+    const html = await (await fetch(page.url)).text();
+    const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
+    const response = await fetch(page.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, "token:jira": "private-token" }) });
+    expect(response.status).toBe(200);
+    const result = await response.text();
+    expect(submitted).toBe(true);
+    expect(result).toContain("Не все MCP подключились");
+    expect(result).toContain("&lt;Jira&gt;");
+    expect(result).toContain("Токен отклонён (HTTP 401)");
+    expect(result).not.toContain("private-token");
+    expect([...await page.result]).toEqual([["jira", "private-token"]]);
+  } finally { page.cancel(); }
+});
+
 test("patches only its provider, preserves JSONC comments and stores no token in config", async () => {
   const root = await folder(), configPath = join(root, "opencode.jsonc"), stateDir = join(root, "state"), serverURL = "http://127.0.0.1:4310";
   const original = '{\n // Keep my comment\n "model": "personal/code",\n "providers": { "personal": { "name": "Personal" } },\n "share": "manual",\n}\n';
@@ -131,6 +234,17 @@ test("patches only its provider, preserves JSONC comments and stores no token in
   const before = (await stat(configPath)).mtimeMs;
   expect((await applyConfig({ configPath, stateDir, serverURL, envelope: envelope(serverURL), previous: first })).changed).toBe(false);
   expect((await stat(configPath)).mtimeMs).toBe(before);
+});
+
+test("provider token reference changes on renewal and survives config sync", async () => {
+  const root = await folder(), configPath = join(root, "opencode.jsonc"), stateDir = join(root, "state"), serverURL = "http://127.0.0.1:4310";
+  await atomicWrite(configPath, "{}");
+  const first = await applyConfig({ configPath, stateDir, serverURL, envelope: envelope(serverURL) });
+  expect(await rotateProviderTokenReference(configPath, stateDir)).toBe(true);
+  expect(parseConfig(await readFile(configPath, "utf8")).providers.corporate.settings.apiKey).toBe(`{file:${join(stateDir, "access-token-next")}}`);
+  expect((await applyConfig({ configPath, stateDir, serverURL, envelope: envelope(serverURL), previous: first })).changed).toBe(false);
+  expect(await rotateProviderTokenReference(configPath, stateDir)).toBe(true);
+  expect(parseConfig(await readFile(configPath, "utf8")).providers.corporate.settings.apiKey).toBe(`{file:${join(stateDir, "access-token")}}`);
 });
 
 test("Kilo config keeps other providers and MCPs while managing only corporate entries", async () => {
@@ -278,7 +392,9 @@ test("an old load response cannot invalidate a newly logged-in account", async (
   const runtime = new CorporateRuntime({ stateDir: root }, { api: { request: () => new Promise((_, no) => { reject = no; }) }, notify: async () => {} });
   runtime.credential = { accessToken: random(), expiresAt: Date.now() + 10000, user: { name: "Old" } };
   const pending = runtime.pollLoad();
+  while (!reject) await Bun.sleep(0);
   const replacement = { accessToken: random(), expiresAt: Date.now() + 10000, user: { name: "New" } };
+  runtime.authGeneration++;
   runtime.credential = replacement;
   runtime.load = { level: "green", message: "New account", checkedAt: Date.now() };
   reject(new Unauthorized()); await pending;
@@ -287,6 +403,8 @@ test("an old load response cannot invalidate a newly logged-in account", async (
   let resolve;
   runtime.api.request = () => new Promise((yes) => { resolve = yes; });
   const late = runtime.pollLoad();
+  while (!resolve) await Bun.sleep(0);
+  runtime.authGeneration++;
   runtime.credential = null;
   runtime.load = { level: "unknown", message: "Logged out", checkedAt: null };
   resolve({ data: { level: "red", message: "Late response", observedAt: Date.now() } });
@@ -298,7 +416,7 @@ test("logout still revokes the token when local JSONC is malformed", async () =>
   const root = await folder(), configPath = join(root, "opencode.jsonc"), revoked = [];
   await atomicWrite(configPath, "{ malformed");
   const runtime = new CorporateRuntime({ stateDir: root, configPath }, { api: { request: async (path) => revoked.push(path) } });
-  runtime.credential = { accessToken: random(), expiresAt: Date.now() + 10000, user: { name: "Test" } };
+  runtime.credential = { accessToken: random(), refreshToken: random(), expiresAt: Date.now() + 10000, user: { name: "Test" } };
   await expect(runtime.logout()).rejects.toThrow("не изменён");
   expect(runtime.credential).toBeNull(); expect(revoked).toEqual(["/oauth/revoke"]);
   expect(await readFile(configPath, "utf8")).toBe("{ malformed"); runtime.dispose();

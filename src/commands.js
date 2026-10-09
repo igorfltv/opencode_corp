@@ -3,7 +3,7 @@ import { lights } from "./runtime.js";
 export const commands = Object.freeze([
   { name: "login", description: "Войти в корпоративный OpenCode через браузер", kiloDescription: "Войти в корпоративный сервис", reload: true },
   { name: "refresh_config", description: "Получить и применить корпоративный конфиг", kiloDescription: "Обновить корпоративный конфиг", reload: true },
-  { name: "skills_load", description: "Выбрать и загрузить корпоративные skills", kiloDescription: "Загрузить корпоративные skills", reload: true },
+  { name: "skills_load", description: "Выбрать community skills, плагины и корпоративные skills", kiloDescription: "Загрузить skills из каталога", reload: true },
   { name: "mcps_load", description: "Выбрать корпоративные MCP и ввести личные токены", kiloDescription: "Подключить корпоративные MCP", reload: true },
   { name: "logout", description: "Выйти из корпоративной учётной записи", kiloDescription: "Выйти из корпоративного сервиса", reload: true },
   { name: "corp_status", description: "Учётная запись, версия конфига и состояние инференса", kiloDescription: "Показать корпоративный статус", reload: false },
@@ -30,7 +30,7 @@ export async function runOpenCodeCommand(runtime, context, name, sessionID) {
       return runtime.bridge.message(sessionID, "Корпоративный статус", `${status.authenticated ? status.user.name : "Не выполнен вход — /login"}\nКонфиг: ${status.config.revision ?? "не загружен"}\nПоследняя проверка: ${status.config.checkedAt ?? "ещё не было"}\n${lights[status.load.level]} ${status.load.message}\nАвтообновление: ${status.refreshMinutes} мин.${status.config.lastError ? `\n${status.config.lastError}` : ""}`);
     }
     case "inference_status": {
-      runtime.token();
+      await runtime.apiToken();
       await runtime.pollLoad();
       return runtime.bridge.message(sessionID, `${lights[runtime.load.level]} Инференс`, runtime.load.message);
     }
@@ -42,7 +42,7 @@ export function registerOpenCodeCommands(context, runtime) {
   return context.command.transform((registry) => {
     for (const { name, description } of commands) registry.add({ name, description, async execute({ sessionID }) {
       try {
-        if (name !== "login" && !runtime.authenticated()) {
+        if (name !== "login" && name !== "skills_load" && !runtime.authenticated()) {
           await runtime.bridge.message(sessionID, `/${name}`, "Сначала выполните /login, чтобы войти в корпоративный OpenCode.");
           return;
         }

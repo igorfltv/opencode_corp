@@ -11,7 +11,7 @@ const rpc = {
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } },
 };
 // A changed runtime shape must not reuse an instance left by a hot-reloaded package.
-const registryKey = Symbol.for("company.opencode.corporate.runtime.v6");
+const registryKey = Symbol.for("company.opencode.corporate.runtime.v9");
 
 function release(registry, key, entry) {
   if (--entry.refs !== 0) return;

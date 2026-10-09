@@ -29,7 +29,8 @@ try {
   const loginForm = await eventually(async () => (await demo.forms()).find((entry) => entry.title.includes("Вход в корпоративный")));
   const callback = await approveBrowser(loginForm.fields[0].url);
   assert.equal((await fetch(callback)).status, 200);
-  await eventually(async () => (await demo.forms()).find((entry) => entry.title.includes("Вход выполнен")));
+  await eventually(async () => !(await demo.forms()).some((entry) => entry.id === loginForm.id));
+  assert(!(await demo.forms()).some((entry) => entry.title.includes("Вход выполнен")));
   assert(parseConfig(await readFile(demo.configPath, "utf8")).providers?.corporate);
   for (const form of await demo.forms()) await demo.request(`/api/session/${demo.session.id}/form/${form.id}`, { method: "DELETE" });
   await demo.command("logout");

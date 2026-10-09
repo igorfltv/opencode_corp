@@ -1,6 +1,6 @@
 // @bun
 // src/runtime.js
-import { join as join4, resolve } from "path";
+import { join as join5, resolve } from "path";
 import { homedir } from "os";
 import { rm as rm2 } from "fs/promises";
 
@@ -1556,8 +1556,11 @@ async function applyConfig({ configPath, stateDir, envelope, serverURL, previous
   let text2 = await readFile2(configPath, "utf8");
   const current = parseConfig(text2);
   const source = clean.config.providers.corporate;
-  const provider = client === "kilo" ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey: `{file:${join2(stateDir, "access-token")}}` }, models: source.models } : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey: `{file:${join2(stateDir, "access-token")}}` } };
   const field = client === "kilo" ? "provider" : "providers";
+  const currentRef = client === "kilo" ? current[field]?.corporate?.options?.apiKey : current[field]?.corporate?.settings?.apiKey;
+  const references = ["access-token", "access-token-next"].map((name) => `{file:${join2(stateDir, name)}}`);
+  const apiKey = references.includes(currentRef) ? currentRef : references[0];
+  const provider = client === "kilo" ? { name: source.name, npm: "@ai-sdk/openai-compatible", options: { baseURL: source.settings.baseURL, apiKey }, models: source.models } : { ...source, package: "@ai-sdk/openai-compatible", settings: { ...source.settings, apiKey } };
   const changed = JSON.stringify(current[field]?.corporate) !== JSON.stringify(provider);
   if (changed) {
     const backup = `${configPath}.before-corporate.bak`;
@@ -1568,6 +1571,24 @@ async function applyConfig({ configPath, stateDir, envelope, serverURL, previous
     await atomicWrite(configPath, text2);
   }
   return { revision: clean.revision, fingerprint, changed, checkedAt: new Date().toISOString() };
+}
+async function rotateProviderTokenReference(configPath, stateDir, client = "opencode") {
+  const original = await readFile2(configPath, "utf8");
+  const current = parseConfig(original);
+  const field = client === "kilo" ? "provider" : "providers";
+  const path = [field, "corporate", client === "kilo" ? "options" : "settings", "apiKey"];
+  const provider = current[field]?.corporate;
+  if (!provider)
+    return false;
+  const oldRef = client === "kilo" ? provider.options?.apiKey : provider.settings?.apiKey;
+  const first = `{file:${join2(stateDir, "access-token")}}`;
+  const second = `{file:${join2(stateDir, "access-token-next")}}`;
+  if (oldRef !== first && oldRef !== second)
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0441\u0441\u044B\u043B\u043A\u0430 \u043D\u0430 \u0442\u043E\u043A\u0435\u043D \u043F\u0440\u043E\u0432\u0430\u0439\u0434\u0435\u0440\u0430");
+  const updated = applyEdits(original, modify(original, path, oldRef === first ? second : first, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  parseConfig(updated);
+  await atomicWrite(configPath, updated);
+  return true;
 }
 async function removeProvider(configPath, client = "opencode") {
   let text2 = await readFile2(configPath, "utf8");
@@ -1687,6 +1708,248 @@ name: ${skill.id}
   return selected.map((skill) => skill.id);
 }
 
+// src/community.js
+import { readFile as readFile4, mkdir as mkdir3 } from "fs/promises";
+import { dirname as dirname2, join as join4 } from "path";
+import { fileURLToPath } from "url";
+
+// community/manifest.json
+var manifest_default = {
+  "caveman-plugin/index.js": "b476ed6d45d64e7dfdaed1361e13547a84f0a354026eecfa5793b7e4de520fa4",
+  "caveman-plugin/package.json": "d9cdf72f8d9daef089e513aa1f9db39293b9abdddf668f542054a74e66b5ee88",
+  "caveman-plugin/rules.md": "ef99681346ed2ff1932e1264fb5cdf1b5bb8ba54d62f7f205eebbd9973979802",
+  "caveman/SKILL.md": "415d43518f2b1a9498c15a445d4657117b129ee5e81b19454ce348439cc6672b",
+  "grill-me/SKILL.md": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+  "grilling/SKILL.md": "befdff1e27a1dfe2a294d5871169ac1afe16d983911daa4f32627514a48c1e15",
+  "megacave/SKILL.md": "139105296c0686c1ee24610caca1db293ab84162beb0d94aa7a9ad7cbc3352bf",
+  "ultracave/SKILL.md": "a8da5b0b3501b853e1b98f2ae09fe8dc9c0edf481b1d3fa9529f8557011c1ef8",
+  "vercel-react-best-practices/AGENTS.md": "fc93e7421177bbf869cce892bc60a6c83a4517d974bc3bf65c4e2c1e58a6ccf6",
+  "vercel-react-best-practices/SKILL.md": "71ed7794962fa6e803ee83030517b5b93a9f70fbfeb431ec4535c5480a8d8355",
+  "vercel-react-best-practices/rules/_sections.md": "01c59969e4e867f0708c8f8ef9c6d87fab9a07d0586244f429ff84013db8a115",
+  "vercel-react-best-practices/rules/_template.md": "99df2a3ea088c6c22de2484ddc7e964d0e9923846f44c63380343ecc64455442",
+  "vercel-react-best-practices/rules/advanced-effect-event-deps.md": "55ed8f9f27a1bff803d6fa55828176207714b02123cbb97ddb8a90d88024a723",
+  "vercel-react-best-practices/rules/advanced-event-handler-refs.md": "a3097edeecfb2ff6851cd66ed8cdf0617c3c88180504bee824aa6e75a215bbbc",
+  "vercel-react-best-practices/rules/advanced-init-once.md": "3e4dc22173eb0e2b6dcf583e3babd862b8696328f8f59aee7c4d746c5bc05f6c",
+  "vercel-react-best-practices/rules/advanced-use-latest.md": "8a3f64dfe5a77d1564248faf17fe662ae75b55d497a243cb30b38eb07ccbbf9a",
+  "vercel-react-best-practices/rules/async-api-routes.md": "523338540d73427dc14c0cbb19f2741ebccdf8b105a7b2c1b33d2905cf237a42",
+  "vercel-react-best-practices/rules/async-cheap-condition-before-await.md": "03107c1f70a293cd58a8abc5474c5548e20ea4efdf01b6d45aae7ad0ac1cb32c",
+  "vercel-react-best-practices/rules/async-defer-await.md": "f3c142d090615abdcc99d31c123be37b31f0f1ed8d9ec9f7789a3bc6883ae0fb",
+  "vercel-react-best-practices/rules/async-dependencies.md": "16ef469f877e30c6b8e1e1b4bc3e527312fa3c6318cb785a4eca186ea236131a",
+  "vercel-react-best-practices/rules/async-parallel.md": "6d2f841896279e976dfcdc1ac89e70771ac188baadfd43c096b5706cb838b961",
+  "vercel-react-best-practices/rules/async-suspense-boundaries.md": "de05fedac2eb7ae563b887b5a424464ec3dfaf84e5b7797467ebe2a796ac8afc",
+  "vercel-react-best-practices/rules/bundle-analyzable-paths.md": "62090b5c815fd71bf1133dce754f51abc16a9456d0ccd025fd627de27726e92a",
+  "vercel-react-best-practices/rules/bundle-barrel-imports.md": "e648f6d54525f07a691357040ca5bff6ea3424788a91ff63812adb29622a671b",
+  "vercel-react-best-practices/rules/bundle-conditional.md": "09c8259c3efb04fc0abb8e412ccbda217c222ae8118516283e571c995fe3a7d4",
+  "vercel-react-best-practices/rules/bundle-defer-third-party.md": "3719fb47b191e8db4fe22686ec88448ad5af9e6838585425abbe103d0b642e37",
+  "vercel-react-best-practices/rules/bundle-dynamic-imports.md": "401817a7369f315fc5a68a1095742ff7d53d0461906880dc9d64a41495ee1986",
+  "vercel-react-best-practices/rules/bundle-preload.md": "d1f7cc28da7cd5ab249acd287edc5b761afcfb194e9cb62cd44c5f3543db2de2",
+  "vercel-react-best-practices/rules/client-event-listeners.md": "242a873349febc1ce685e85617994784dbab92c2eaa68aed7fed5a83e7680e93",
+  "vercel-react-best-practices/rules/client-localstorage-schema.md": "0fb7cdf9dc93fdf22f87e3669f953fb9d4ac9b0be42eec4a29fe9a2560610b88",
+  "vercel-react-best-practices/rules/client-passive-event-listeners.md": "1f35016f9053de69e884ee9be00654e37979c2ca85f5e57764dc2626ff7acb4b",
+  "vercel-react-best-practices/rules/client-swr-dedup.md": "644652c39c6cc00de8d1c77a7273612e868dc3f7edda30764164c12ec0f764a3",
+  "vercel-react-best-practices/rules/js-batch-dom-css.md": "480b891b9eaf96e929dc1e964274a4828e3a78009b7d00ccd965a0d425215959",
+  "vercel-react-best-practices/rules/js-cache-function-results.md": "3daaa11d24f4295cb6be8bc6f407f2ce83cc7b5bd1f0e68891ea8ab835721dc7",
+  "vercel-react-best-practices/rules/js-cache-property-access.md": "73e47431e74878a927061bf0ddc7cd91a7556cb35d2573f3421e82300d9ae311",
+  "vercel-react-best-practices/rules/js-cache-storage.md": "11b826b0433898c1ece2d3547010d8e77db9fb240185748c45db91493de9b6cc",
+  "vercel-react-best-practices/rules/js-combine-iterations.md": "71add08aeeb43091d4ff4c0b2842cce8b4bdef8ad3e732cc034bb5a84827e746",
+  "vercel-react-best-practices/rules/js-early-exit.md": "925ce5ce87f3347186ca62212f29cc6baa2b8c85a96d2720ad07c3d0abf781c0",
+  "vercel-react-best-practices/rules/js-flatmap-filter.md": "9e5b166a41914d975bef7635467f8fb32cd98b5c3126c0bc6f163490812fb5f0",
+  "vercel-react-best-practices/rules/js-hoist-regexp.md": "f9e9aef2f7c2307dd7310f283df85dcada45fc43e9bb941b0c3aa414dec21ec4",
+  "vercel-react-best-practices/rules/js-index-maps.md": "5df1bdc2cfabb2c98abd55d26762e5c18189535c2e686184f426082e62920391",
+  "vercel-react-best-practices/rules/js-length-check-first.md": "8b54a311c826b299272f29187fc58bc55772a04c4a72eeb29456ee96dc9fc624",
+  "vercel-react-best-practices/rules/js-min-max-loop.md": "87dfb67e2f39df6ad8bcfb5b78c5fb364d3c07554ad188a202408d99f3763421",
+  "vercel-react-best-practices/rules/js-request-idle-callback.md": "ee08f83905b4011abbc33d594033157d77561b5bbd9b36b04f0f409581ffec32",
+  "vercel-react-best-practices/rules/js-set-map-lookups.md": "a7fd781a6ba9ad49065961b6f9a90ef486bf6b648390e1a08704025f98e1642b",
+  "vercel-react-best-practices/rules/js-tosorted-immutable.md": "d0a5e1b0fec48a0a81397957e2f068e224329f7c42cb5feeed8aae6fa64025e8",
+  "vercel-react-best-practices/rules/rendering-activity.md": "1e5e7eaf3555e61d6a2e900089c676527d26259501db5594f59544b6c664f85a",
+  "vercel-react-best-practices/rules/rendering-animate-svg-wrapper.md": "9c6ae0ca7a51434e803887c64cded760956579a1452ccb80a461a03f9c937c77",
+  "vercel-react-best-practices/rules/rendering-conditional-render.md": "2ec2fa23c4148285144687050c52369adba3da2fbe3d486f8d3e0aad8f06f2bc",
+  "vercel-react-best-practices/rules/rendering-content-visibility.md": "64eee6d5b916fe74df33363994b27fc7f71bea3bcedc7ee04bda23107ca3e6e4",
+  "vercel-react-best-practices/rules/rendering-hoist-jsx.md": "93b229560fae92005ed9a2a829064607b39b2e984e92d221d05b2d41df2b7c0e",
+  "vercel-react-best-practices/rules/rendering-hydration-no-flicker.md": "dc7ab358c67c177bca6e6f360fbc935ebe4efa928c0ba3ebd3f9f3d9e2000ca3",
+  "vercel-react-best-practices/rules/rendering-hydration-suppress-warning.md": "915bacb934e2927d84b37a3f3d225a47b309ac8f9e494ed2bcb66ce07c5676a2",
+  "vercel-react-best-practices/rules/rendering-resource-hints.md": "351b1095d641717b930f1b2253282b7120af3023bc74e06c17675168d4286864",
+  "vercel-react-best-practices/rules/rendering-script-defer-async.md": "4cea07b7875ba7fc2c7465ff23b63a2bb334f90aaf2d9293d38d67b05fdb32ab",
+  "vercel-react-best-practices/rules/rendering-svg-precision.md": "ed468533f6e95f622859c884b122cf21f9f593ed6bb3d500a54de4b9f9bcb9fb",
+  "vercel-react-best-practices/rules/rendering-usetransition-loading.md": "3a1249c3f13026b6f54ab5712c388df219d6af01b12aa542749acd99a46f4bc1",
+  "vercel-react-best-practices/rules/rerender-defer-reads.md": "234050a77faf50cb306be10a9e15bd4421134ab5907e75f13e6d78e2bd262dc9",
+  "vercel-react-best-practices/rules/rerender-dependencies.md": "17eb5830956fb56486fd3cfc7431f5849d39751730c05ad9e77dd4f0c27169c5",
+  "vercel-react-best-practices/rules/rerender-derived-state-no-effect.md": "cb11ec76f50aa7b6847269f02d79b120c889a30d9ecd2c1d578f75144419c77a",
+  "vercel-react-best-practices/rules/rerender-derived-state.md": "1c326bb67b01fb084eb00c8911b0a7cff54681c2315b629f88e49b64eaa6481d",
+  "vercel-react-best-practices/rules/rerender-functional-setstate.md": "5e68df6b2ae8058e67f476ff1ac67bde159f5a9d18df439e46eabcdeb7b52e58",
+  "vercel-react-best-practices/rules/rerender-lazy-state-init.md": "4ae844740f266fc8cbf050701230286624a2440ec5be67b9a63d9edc3c580573",
+  "vercel-react-best-practices/rules/rerender-memo-with-default-value.md": "81c47476564ad8a79fc68fc442734255ca7d6829424359464503fda0a9f9a0dd",
+  "vercel-react-best-practices/rules/rerender-memo.md": "1f258990c2f27ff6256b3cc5c43300631bb3f0d81f749aed08d07fcdcc131dd1",
+  "vercel-react-best-practices/rules/rerender-move-effect-to-event.md": "abc2cbf167bee056743023351e96806a411d3398da8802093620aecf0721f029",
+  "vercel-react-best-practices/rules/rerender-no-inline-components.md": "1cc32907a770272524ba682eef9e7efdd8ad4533b6f89b718a1fcd7d1d0eb6a3",
+  "vercel-react-best-practices/rules/rerender-simple-expression-in-memo.md": "5bdcf2d1558ba5204e643c887b7b4060f89630969425651eb68e96427d97f800",
+  "vercel-react-best-practices/rules/rerender-split-combined-hooks.md": "6f45d703343484ef9acef9388397f3642966ae6a5a258899a0cf1f9977cfbf6c",
+  "vercel-react-best-practices/rules/rerender-transitions.md": "60f4033909a62df5e5b8c601494f9e50a562e2f8c1c2d81eac24f38142265f1c",
+  "vercel-react-best-practices/rules/rerender-use-deferred-value.md": "8c3579576a61a949884167745dcfaf1d5426ba305cc61fd0a79602d70fda4909",
+  "vercel-react-best-practices/rules/rerender-use-ref-transient-values.md": "f1a649af9d1d0b5c762f6c9c4c1c70c90d7df82aa10296ee87aadb78c1b76c54",
+  "vercel-react-best-practices/rules/server-after-nonblocking.md": "d0b8d24a3db9f0f65f9e2bddbf230b0e03a5f60e1229d93a4a18f5e7a991c7c2",
+  "vercel-react-best-practices/rules/server-auth-actions.md": "a2ca8aa102839251c7971ec784560fab943c20b36fe6f80365d4110c13260c23",
+  "vercel-react-best-practices/rules/server-cache-lru.md": "1924b64561841923b88a657085097a0aeba3e0ba2d5470b9f5c15cc10d6ae70f",
+  "vercel-react-best-practices/rules/server-cache-react.md": "fddeea6c870bb3da4134b61d54b7d09b83d2603f929b7547cd3dc1dc269edd5c",
+  "vercel-react-best-practices/rules/server-dedup-props.md": "c2747424cdac46be62f835f245a0aa887b0090b416d28e2ac8676702645eeb37",
+  "vercel-react-best-practices/rules/server-hoist-static-io.md": "5abea4dd882b13661bd5f7dfb93f9e547d5f08176c61c448ade91b210ed5d49f",
+  "vercel-react-best-practices/rules/server-no-shared-module-state.md": "4d869bf1cd2f1632e5ca4c0e64b1cf0e71c5f5a0f940bc8a22174d205e735ed7",
+  "vercel-react-best-practices/rules/server-parallel-fetching.md": "569a2e9fc04f9606686cd75c5894ef8781b502786a7fffe241396846c7733472",
+  "vercel-react-best-practices/rules/server-parallel-nested-fetching.md": "ad5d9656984d4a959997a2367bf59cc6632297b4634a1dd13a087939d83f30b3",
+  "vercel-react-best-practices/rules/server-serialization.md": "f4c7d68b29c82381baad059c4a7f09e868e71ec9c3115a26ad3ae7d24c0dfe1f"
+};
+
+// src/community.js
+var SUPERPOWERS_SPEC = "superpowers@git+https://github.com/obra/superpowers.git#8ca22dba9a94f28898bbce59f2537ff4d87c747d";
+var CAVEMAN_SPEC = "./community-plugins/caveman";
+var packages = Object.freeze([
+  { id: "community-superpowers", name: "Superpowers", kind: "plugin", client: "opencode", version: "8ca22db", description: "\u041C\u0435\u0442\u043E\u0434\u0438\u043A\u0430 \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0438 \u0438 \u043D\u0430\u0431\u043E\u0440 skills; OpenCode V2 plugin (obra/superpowers)." },
+  { id: "community-caveman", name: "Caveman", kind: "plugin", client: "opencode", version: "2e08b91", description: "\u041A\u0440\u0430\u0442\u043A\u0438\u0435 \u043E\u0442\u0432\u0435\u0442\u044B \u0441 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435\u043C \u0444\u0430\u043A\u0442\u043E\u0432; OpenCode V2 \u0430\u0434\u0430\u043F\u0442\u0435\u0440, /caveman on|off." },
+  { id: "community-grill-me", name: "Grill me", kind: "skill", version: "b0618bc", description: "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0438\u0434\u0435\u0438 \u0432\u043E\u043F\u0440\u043E\u0441\u0430\u043C\u0438; \u0432\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u0437\u0430\u0432\u0438\u0441\u0438\u043C\u044B\u0439 grilling (mattpocock/skills)." },
+  { id: "community-react-best-practices", name: "React Best Practices", kind: "skill", version: "063bee9", description: "70 \u043F\u0440\u0430\u0432\u0438\u043B \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0438\u0442\u0435\u043B\u044C\u043D\u043E\u0441\u0442\u0438 React/Next.js \u043E\u0442 Vercel; \u0434\u043B\u044F frontend \u0437\u0430\u0434\u0430\u0447." }
+]);
+function communityCatalog(client) {
+  return packages.filter((item) => !item.client || item.client === client);
+}
+function packageFiles(id) {
+  const prefixes = {
+    "community-caveman": ["caveman/", "ultracave/", "megacave/", "caveman-plugin/"],
+    "community-grill-me": ["grill-me/", "grilling/"],
+    "community-react-best-practices": ["vercel-react-best-practices/"]
+  }[id] ?? [];
+  return Object.keys(manifest_default).filter((path) => prefixes.some((prefix) => path.startsWith(prefix)));
+}
+async function assetRoot() {
+  const here = dirname2(fileURLToPath(import.meta.url));
+  for (const candidate of [join4(here, "community"), join4(here, "..", "community")]) {
+    if (await exists(join4(candidate, "manifest.json")))
+      return candidate;
+  }
+  throw new Error("\u0412 \u043F\u0430\u043A\u0435\u0442\u0435 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442 \u043A\u0430\u0442\u0430\u043B\u043E\u0433 community skills");
+}
+function destination(path, { skillsDir, configPath }) {
+  if (path.startsWith("caveman-plugin/"))
+    return join4(dirname2(configPath), "community-plugins", "caveman", path.slice("caveman-plugin/".length));
+  return join4(skillsDir, path);
+}
+function ownerFile(folder) {
+  return join4(folder, ".community-source.json");
+}
+async function preflightGroup(files, group, options) {
+  const marker = ownerFile(group);
+  const parent = await exists(group);
+  if (parent?.isSymbolicLink())
+    throw new Error(`\u0421\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0441\u0441\u044B\u043B\u043A\u0430 \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430: ${group}`);
+  let owned = null;
+  if (await exists(marker)) {
+    try {
+      owned = JSON.parse(await readFile4(marker, "utf8"));
+    } catch {
+      throw new Error(`\u041F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D \u043C\u0430\u0440\u043A\u0435\u0440 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438: ${marker}`);
+    }
+    if (!owned || typeof owned.files !== "object")
+      throw new Error(`\u041F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D \u043C\u0430\u0440\u043A\u0435\u0440 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438: ${marker}`);
+  } else if (parent)
+    throw new Error(`\u041A\u0430\u0442\u0430\u043B\u043E\u0433 ${group} \u0443\u0436\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442 \u0438 \u043D\u0435 \u0443\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442\u0441\u044F /skills_load`);
+  for (const path of files) {
+    const target = destination(path, options);
+    for (let parentPath = dirname2(target);parentPath !== group && parentPath.startsWith(`${group}/`); parentPath = dirname2(parentPath)) {
+      if ((await exists(parentPath))?.isSymbolicLink())
+        throw new Error(`\u0421\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0441\u0441\u044B\u043B\u043A\u0430 \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430: ${parentPath}`);
+    }
+    const stat = await exists(target);
+    if (stat?.isSymbolicLink())
+      throw new Error(`\u0421\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0441\u0441\u044B\u043B\u043A\u0430 \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430: ${target}`);
+    if (stat) {
+      if (!owned?.files?.[path] || digest(await readFile4(target)) !== owned.files[path])
+        throw new Error(`\u0424\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0451\u043D \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E: ${target}`);
+    } else if (owned?.files?.[path])
+      throw new Error(`\u0424\u0430\u0439\u043B \u0443\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u043C\u043E\u0433\u043E skill \u0443\u0434\u0430\u043B\u0451\u043D: ${target}`);
+  }
+  return { group, marker, files };
+}
+function configPlugins(text2) {
+  const errors = [];
+  const parsed = parse2(text2, errors, { allowTrailingComma: true });
+  if (errors.length || !parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 opencode.jsonc");
+  if (parsed.plugins !== undefined && !Array.isArray(parsed.plugins))
+    throw new Error("plugins \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u043C\u0430\u0441\u0441\u0438\u0432\u043E\u043C");
+  return parsed.plugins ?? [];
+}
+async function addPlugins(configPath, wanted) {
+  if (!wanted.length)
+    return [];
+  const text2 = await readFile4(configPath, "utf8");
+  const current = configPlugins(text2);
+  for (const spec of wanted) {
+    const name = spec === CAVEMAN_SPEC ? "caveman" : "superpowers";
+    if (current.some((entry) => JSON.stringify(entry).toLowerCase().includes(name) && entry !== spec)) {
+      throw new Error(`${name} \u0443\u0436\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D \u0434\u0440\u0443\u0433\u0438\u043C \u0441\u043F\u043E\u0441\u043E\u0431\u043E\u043C; \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 plugins \u0432 ${configPath}`);
+    }
+  }
+  const added = wanted.filter((spec) => !current.includes(spec));
+  if (!added.length)
+    return [];
+  const next = applyEdits(text2, modify(text2, ["plugins"], [...current, ...added], { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+  configPlugins(next);
+  const backup = `${configPath}.before-community.bak`;
+  if (!await exists(backup))
+    await atomicWrite(backup, text2);
+  await atomicWrite(configPath, next);
+  return added;
+}
+async function installCommunity({ ids, client, skillsDir, configPath }) {
+  const catalog = communityCatalog(client);
+  if (!Array.isArray(ids) || ids.length > catalog.length || new Set(ids).size !== ids.length)
+    throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0432\u044B\u0431\u043E\u0440 community skills");
+  const selected = ids.map((id) => {
+    const item = catalog.find((entry) => entry.id === id);
+    if (!item)
+      throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0438\u043B\u0438 \u043D\u0435\u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u044B\u0439 community skill");
+    return item;
+  });
+  if (!selected.length)
+    return [];
+  if ((await exists(skillsDir))?.isSymbolicLink())
+    throw new Error("\u041A\u0430\u0442\u0430\u043B\u043E\u0433 skills \u043D\u0435 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u0441\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u043E\u0439 \u0441\u0441\u044B\u043B\u043A\u043E\u0439");
+  const root = await assetRoot();
+  const all = new Map;
+  const groups = new Map;
+  for (const item of selected)
+    for (const path of packageFiles(item.id)) {
+      const content = await readFile4(join4(root, path));
+      if (digest(content) !== manifest_default[path])
+        throw new Error(`\u041F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D \u0444\u0430\u0439\u043B \u043F\u043E\u0441\u0442\u0430\u0432\u043A\u0438: ${path}`);
+      const target = destination(path, { skillsDir, configPath });
+      const group = path.startsWith("caveman-plugin/") ? join4(dirname2(configPath), "community-plugins", "caveman") : join4(skillsDir, path.split("/")[0]);
+      all.set(path, { target, content, group });
+      groups.set(group, [...groups.get(group) ?? [], path]);
+    }
+  const preflight = [];
+  for (const [group, files] of groups)
+    preflight.push(await preflightGroup(files, group, { skillsDir, configPath }));
+  const wanted = client === "opencode" ? selected.filter((item) => item.kind === "plugin").map((item) => item.id === "community-caveman" ? CAVEMAN_SPEC : SUPERPOWERS_SPEC) : [];
+  if (wanted.length) {
+    const current = configPlugins(await readFile4(configPath, "utf8"));
+    for (const spec of wanted) {
+      const name = spec === CAVEMAN_SPEC ? "caveman" : "superpowers";
+      if (current.some((entry) => JSON.stringify(entry).toLowerCase().includes(name) && entry !== spec))
+        throw new Error(`${name} \u0443\u0436\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D \u0434\u0440\u0443\u0433\u0438\u043C \u0441\u043F\u043E\u0441\u043E\u0431\u043E\u043C`);
+    }
+  }
+  for (const { group, marker, files } of preflight) {
+    await mkdir3(group, { recursive: true, mode: 448 });
+    for (const path of files) {
+      const { target, content } = all.get(path);
+      await atomicWrite(target, content);
+    }
+    await atomicWrite(marker, JSON.stringify({ files: Object.fromEntries(files.map((path) => [path, manifest_default[path]])) }, null, 2));
+  }
+  await addPlugins(configPath, wanted);
+  return selected.map((item) => `${item.name} (${item.kind === "plugin" ? "plugin" : "skill"})`);
+}
+
 // src/secret-page.js
 import { createServer } from "http";
 var maxToken = 512;
@@ -1696,12 +1959,26 @@ function page(items, action, csrf) {
   :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 90% 0%,#d7ebe8 0,transparent 38%),#f3f6f7}main{width:min(720px,calc(100% - 32px));margin:56px auto 72px}.brand{display:flex;align-items:center;gap:12px;color:#264e54;font-size:13px;font-weight:750;letter-spacing:.11em;text-transform:uppercase}.mark{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#15766d;color:white;font-size:21px;font-weight:700;letter-spacing:0}.panel{margin-top:22px;padding:clamp(24px,5vw,44px);background:#fff;border:1px solid #e0e8e9;border-radius:24px;box-shadow:0 20px 60px #1c434b12}h1{margin:0;font-size:clamp(28px,4vw,38px);line-height:1.15;letter-spacing:-.035em}.lead{margin:15px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}.notice{display:flex;gap:12px;margin:26px 0 8px;padding:15px 17px;background:#ecf8f5;border:1px solid #cce8e1;border-radius:13px;color:#275f57;font-size:14px;line-height:1.45}.notice b{font-size:18px;line-height:1}.system{padding:25px 0;border-bottom:1px solid #e9eef0}.system-head{display:flex;gap:16px;align-items:flex-start}.number{display:grid;place-items:center;flex:none;width:35px;height:35px;border-radius:10px;background:#eaf1f2;color:#4b7278;font-size:12px;font-weight:750}.system h2{margin:1px 0 5px;font-size:19px;letter-spacing:-.015em}.system p{margin:0;color:#64747e;font-size:14px;line-height:1.45}.system label{display:block;margin:20px 0 8px;color:#344a54;font-size:13px;font-weight:700}.system input{display:block;width:100%;height:48px;padding:0 14px;border:1px solid #bdcdd1;border-radius:10px;background:#fbfdfd;color:#17212b;font:inherit;outline:none;transition:border-color .15s,box-shadow .15s}.system input:focus{border-color:#15766d;box-shadow:0 0 0 4px #15766d20}.system input::placeholder{color:#9ba9ae}.footer{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:28px}.footnote{max-width:350px;color:#667780;font-size:13px;line-height:1.45}button{border:0;border-radius:11px;padding:14px 23px;background:#126d64;color:#fff;font:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 6px 16px #126d642d}button:hover{background:#0d5a52}button:focus-visible{outline:3px solid #71cabe;outline-offset:3px}@media(max-width:600px){main{margin:24px auto 40px}.panel{border-radius:18px}.footer{align-items:stretch;flex-direction:column-reverse}button{width:100%}}
   </style></head><body><main><div class="brand"><span class="mark">\u2197</span> \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="panel"><h1>\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0441\u0438\u0441\u0442\u0435\u043C\u044B</h1><p class="lead">\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0434\u043B\u044F ${items.length} ${items.length % 10 === 1 && items.length % 100 !== 11 ? "\u0441\u0438\u0441\u0442\u0435\u043C\u044B" : "\u0441\u0438\u0441\u0442\u0435\u043C"}. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442 MCP \u0432 \u0442\u0435\u043A\u0443\u0449\u0435\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435 OpenCode \u0438\u043B\u0438 Kilo.</p><div class="notice"><b>\u25C8</b><span>\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u044E\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C\u0443 \u043F\u043B\u0430\u0433\u0438\u043D\u0443. \u041E\u043D\u0438 \u043D\u0435 \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0432 \u0447\u0430\u0442\u0435 \u0438 \u043D\u0435 \u0431\u0443\u0434\u0443\u0442 \u0437\u0430\u043F\u0438\u0441\u0430\u043D\u044B \u0432 \u0444\u0430\u0439\u043B \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438.</span></div><form method="post" action="${action}" autocomplete="off"><input type="hidden" name="csrf" value="${csrf}">${fields}<div class="footer"><span class="footnote">\u041F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u043A\u0430 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F \u043F\u043E\u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0432\u0432\u0435\u0441\u0442\u0438 \u0442\u043E\u043A\u0435\u043D\u044B \u0441\u043D\u043E\u0432\u0430.</span><button type="submit">\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C ${items.length} MCP</button></div></form></div></main></body></html>`;
 }
-async function captureSecrets(items, { timeoutMs = 300000 } = {}) {
+function resultPage(outcome = {}) {
+  const kind = ["success", "warning", "error"].includes(outcome.kind) ? outcome.kind : "warning";
+  const title = escapeHTML(outcome.title ?? "\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u043D\u044B");
+  const message = escapeHTML(outcome.message ?? "\u041F\u043B\u0430\u0433\u0438\u043D \u043E\u0431\u0440\u0430\u0431\u0430\u0442\u044B\u0432\u0430\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435.");
+  const icon = { success: "\u2713", warning: "\xB7", error: "!" }[kind];
+  const items = Array.isArray(outcome.items) ? outcome.items.map((item) => {
+    const state = item.status === "connected" ? "ok" : item.status === "failed" ? "bad" : "wait";
+    return `<li><span class="dot ${state}">${{ ok: "\u2713", bad: "!", wait: "\xB7" }[state]}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.detail ?? "")}</small></span></li>`;
+  }).join("") : "";
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${title}</title><style>
+  :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% 0%,#d7ebe8 0,transparent 40%),#f3f6f7}main{width:min(620px,calc(100% - 32px));margin:9vh auto 48px}.brand{color:#37666a;font-size:12px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}.card{margin-top:20px;padding:clamp(26px,5vw,42px);border:1px solid #e0e8e9;border-radius:24px;background:#fff;box-shadow:0 20px 60px #1c434b12}.icon{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;font-size:29px;font-weight:700;background:#e7f5ef;color:#16805c}.warning .icon{background:#fff4da;color:#a56b14}.error .icon{background:#fcebea;color:#bd5149}h1{margin:24px 0 0;font-size:clamp(28px,4vw,36px);line-height:1.15;letter-spacing:-.035em}p{margin:13px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}ul{list-style:none;margin:27px 0 0;padding:0;border-top:1px solid #edf0f1}li{display:flex;gap:13px;align-items:flex-start;padding:16px 0;border-bottom:1px solid #edf0f1}.dot{display:grid;place-items:center;flex:none;width:27px;height:27px;border-radius:9px;font-size:15px;font-weight:750}.dot.ok{background:#e7f5ef;color:#16805c}.dot.bad{background:#fcebea;color:#bd5149}.dot.wait{background:#edf1f3;color:#667780}strong{display:block;font-size:15px}small{display:block;margin-top:4px;color:#6a7981;font-size:13px;line-height:1.4}.footer{margin-top:25px;color:#7c8b92;font-size:13px}@media(max-width:600px){main{margin:24px auto}.card{border-radius:18px}}
+  </style></head><body><main class="${kind}"><div class="brand">\u2197 \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B</div><div class="card"><div class="icon">${icon}</div><h1>${title}</h1><p>${message}</p>${items ? `<ul>${items}</ul>` : ""}<div class="footer">\u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</div></div></main></body></html>`;
+}
+async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
   if (!Array.isArray(items) || !items.length || items.length > 30 || new Set(items.map((item) => item.id)).size !== items.length || items.some((item) => !/^[a-z][a-z0-9_-]{0,39}$/.test(item.id)))
     throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A MCP \u0434\u043B\u044F \u0432\u0432\u043E\u0434\u0430 \u0442\u043E\u043A\u0435\u043D\u043E\u0432");
   const nonce = random();
   const csrf = random();
   let settled = false;
+  let processing = false;
   let accept, reject;
   const result = new Promise((yes, no) => {
     accept = yes;
@@ -1747,11 +2024,26 @@ async function captureSecrets(items, { timeoutMs = 300000 } = {}) {
       response.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }).end("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0443.");
       return;
     }
+    if (settled || processing) {
+      response.writeHead(409, headers).end();
+      return;
+    }
+    processing = true;
     const tokens = new Map(items.map((item) => [item.id, form.get(`token:${item.id}`)]));
-    response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><html lang=ru><meta charset=utf-8><title>MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0430\u044E\u0442\u0441\u044F</title><style>body{font:16px system-ui;max-width:32rem;margin:12vh auto;padding:2rem;background:#f3f6f7;color:#17212b}main{padding:2rem;background:white;border-radius:18px}h1{font-size:25px}</style><main><h1>\u0422\u043E\u043A\u0435\u043D\u044B \u043F\u0435\u0440\u0435\u0434\u0430\u043D\u044B</h1><p>\u041F\u043B\u0430\u0433\u0438\u043D \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 MCP. \u042D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043A\u0440\u044B\u0442\u044C.</p></main></html>");
-    if (!settled) {
-      settled = true;
-      accept(tokens);
+    try {
+      const outcome = await onSubmit?.(tokens);
+      if (!settled) {
+        response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(resultPage(outcome));
+        settled = true;
+        accept(tokens);
+      }
+    } catch (error) {
+      if (!settled) {
+        response.writeHead(500, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(resultPage({ kind: "error", title: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435", message: "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 OpenCode \u0438\u043B\u0438 Kilo \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /mcps_load." }));
+        settled = true;
+        reject(error);
+      }
+    } finally {
       server.close();
     }
   });
@@ -1906,7 +2198,8 @@ class OpenCodeBridge {
 
 // src/runtime.js
 var lights = { green: "\uD83D\uDFE2", yellow: "\uD83D\uDFE1", red: "\uD83D\uDD34", unknown: "\u26AA" };
-var validCredential = (value) => value && typeof value.accessToken === "string" && /^[A-Za-z0-9_-]{32,256}$/.test(value.accessToken) && Number.isFinite(value.expiresAt) && typeof value.user?.name === "string";
+var validToken2 = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{32,256}$/.test(value);
+var validCredential = (value) => value && validToken2(value.accessToken) && validToken2(value.inferenceToken) && validToken2(value.refreshToken) && Number.isFinite(value.expiresAt) && Number.isFinite(value.inferenceExpiresAt) && Number.isFinite(value.refreshExpiresAt) && typeof value.user?.name === "string";
 
 class CorporateRuntime {
   constructor(options, adapters = {}) {
@@ -1916,9 +2209,11 @@ class CorporateRuntime {
     this.applyConfig = adapters.applyConfig ?? applyConfig;
     this.removeProvider = adapters.removeProvider ?? removeProvider;
     this.syncMCP = adapters.syncMCP;
+    this.reloadProvider = adapters.reloadProvider ?? (() => rotateProviderTokenReference(this.options.configPath, this.options.stateDir, this.options.client));
     this.open = adapters.open ?? openBrowser;
     this.desktop = adapters.notify ?? notifyDesktop;
     this.queue = serial();
+    this.configWrites = serial();
     this.listeners = new Set;
     this.jobs = new Set;
     this.forms = new Map;
@@ -1932,48 +2227,94 @@ class CorporateRuntime {
   }
   async start() {
     await Promise.all([
-      rm2(join4(this.options.stateDir, "mcp-selection.json"), { force: true }),
-      rm2(join4(this.options.stateDir, "mcp-tokens"), { force: true, recursive: true })
+      rm2(join5(this.options.stateDir, "mcp-selection.json"), { force: true }),
+      rm2(join5(this.options.stateDir, "mcp-tokens"), { force: true, recursive: true })
     ]);
-    this.credential = await readJSON(join4(this.options.stateDir, "credential.json"));
-    if (!validCredential(this.credential) || this.credential.expiresAt <= Date.now())
-      this.credential = null;
-    this.state = await readJSON(join4(this.options.stateDir, "sync.json"), {});
-    if (!this.credential) {
-      await rm2(join4(this.options.stateDir, "credential.json"), { force: true });
-      await rm2(join4(this.options.stateDir, "sync.json"), { force: true });
-      const tokenPath = join4(this.options.stateDir, "access-token");
-      if (await exists(tokenPath))
-        await atomicWrite(tokenPath, "");
-      await this.removeProvider(this.options.configPath, this.options.client);
-      await clearMCP(this.options.stateDir);
-      await this.syncMCP?.([]);
-      this.state = {};
-    }
-    if (this.authenticated())
-      await this.refreshMCPCatalog().catch(() => {});
+    this.credential = null;
+    await rm2(join5(this.options.stateDir, "credential.json"), { force: true });
+    await rm2(join5(this.options.stateDir, "sync.json"), { force: true });
+    const tokenPath = join5(this.options.stateDir, "access-token");
+    if (await exists(tokenPath))
+      await atomicWrite(tokenPath, "");
+    const alternatePath = join5(this.options.stateDir, "access-token-next");
+    if (await exists(alternatePath))
+      await atomicWrite(alternatePath, "");
+    await this.removeProvider(this.options.configPath, this.options.client);
+    await clearMCP(this.options.stateDir);
+    await this.syncMCP?.([]);
+    this.state = {};
     this.configTimer = setInterval(() => this.backgroundRefresh(), this.options.refreshMs);
     this.loadTimer = setInterval(() => this.pollLoad().catch(() => {}), this.options.loadPollMs);
     this.configTimer.unref();
     this.loadTimer.unref();
-    if (this.authenticated()) {
-      this.backgroundRefresh();
-      this.pollLoad().catch(() => {});
-    }
   }
   authenticated() {
-    return Boolean(this.credential && this.credential.expiresAt > Date.now());
+    return Boolean(this.credential && (this.credential.refreshExpiresAt ?? this.credential.expiresAt) > Date.now());
   }
   token() {
-    if (!this.authenticated())
+    if (!this.authenticated() || this.credential.expiresAt <= Date.now())
       throw new Unauthorized;
     return this.credential.accessToken;
+  }
+  async apiToken() {
+    await this.ensureFreshTokens();
+    return this.token();
+  }
+  scheduleTokenRenewal(retryMs) {
+    clearTimeout(this.tokenTimer);
+    if (!this.authenticated() || !this.credential.refreshToken)
+      return;
+    const remaining = Math.min(this.credential.expiresAt, this.credential.inferenceExpiresAt) - Date.now();
+    const delay = retryMs ?? Math.max(100, Math.floor(remaining * 0.8));
+    this.tokenRenewAt = Date.now() + delay;
+    this.tokenTimer = setTimeout(async () => {
+      try {
+        await this.ensureFreshTokens(true);
+      } catch (error) {
+        if (error instanceof Unauthorized)
+          await this.invalidate();
+        else {
+          await this.notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0434\u043E\u0441\u0442\u0443\u043F \u043A \u043C\u043E\u0434\u0435\u043B\u0438; \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0435\u043C \u043F\u043E\u043F\u044B\u0442\u043A\u0443", "warning");
+          this.scheduleTokenRenewal(5000);
+        }
+      }
+    }, delay);
+    this.tokenTimer.unref();
+  }
+  async ensureFreshTokens(force = false) {
+    if (!this.authenticated())
+      throw new Unauthorized;
+    if (!this.credential.refreshToken || !force && this.tokenRenewAt > Date.now() && this.credential.expiresAt > Date.now())
+      return;
+    if (this.renewing)
+      return this.renewing;
+    const generation = this.authGeneration;
+    const old = this.credential;
+    this.renewing = (async () => {
+      const { data } = await this.api.request("/oauth/refresh", { method: "POST", body: { refreshToken: old.refreshToken }, signal: this.abort.signal });
+      if (!validCredential(data) || data.refreshExpiresAt <= Date.now())
+        throw new Error("\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0435\u0440\u043D\u0443\u043B \u043D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B");
+      if (generation !== this.authGeneration || this.credential !== old || this.abort.signal.aborted)
+        return;
+      await atomicWrite(join5(this.options.stateDir, "access-token"), data.inferenceToken);
+      await atomicWrite(join5(this.options.stateDir, "access-token-next"), data.inferenceToken);
+      if (generation !== this.authGeneration || this.credential !== old || this.abort.signal.aborted) {
+        await Promise.all([atomicWrite(join5(this.options.stateDir, "access-token"), ""), atomicWrite(join5(this.options.stateDir, "access-token-next"), "")]);
+        return;
+      }
+      this.credential = data;
+      this.scheduleTokenRenewal();
+      await this.configWrites(() => this.reloadProvider());
+    })().finally(() => {
+      this.renewing = null;
+    });
+    return this.renewing;
   }
   status() {
     return {
       authenticated: this.authenticated(),
       user: this.authenticated() ? this.credential.user : null,
-      expiresAt: this.authenticated() ? this.credential.expiresAt : null,
+      expiresAt: this.authenticated() ? this.credential.refreshExpiresAt ?? this.credential.expiresAt : null,
       config: { revision: this.state.revision ?? null, checkedAt: this.state.checkedAt ?? null, lastError: this.state.lastError ?? null },
       load: { ...this.load },
       refreshMinutes: this.options.refreshMs / 60000
@@ -1986,19 +2327,19 @@ class CorporateRuntime {
     await Promise.allSettled([this.desktop(message), ...[...this.listeners].map((listener) => Promise.resolve().then(() => listener(event)))]);
   }
   async persistState() {
-    await atomicWrite(join4(this.options.stateDir, "sync.json"), JSON.stringify(this.state, null, 2));
+    await atomicWrite(join5(this.options.stateDir, "sync.json"), JSON.stringify(this.state, null, 2));
   }
   async refresh() {
     if (this.refreshing)
       return this.refreshing;
     this.refreshing = this.queue(async () => {
-      const token = this.token();
+      const token = await this.apiToken();
       try {
         const response = await this.api.request("/api/config", { token, etag: this.state.etag, signal: this.abort.signal });
         if (response.unchanged)
           this.state = { ...this.state, checkedAt: new Date().toISOString(), lastError: null };
         else {
-          const applied = await this.applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null });
+          const applied = await this.configWrites(() => this.applyConfig({ ...this.options, envelope: response.data, previous: this.state.revision ? this.state : null }));
           this.state = { ...applied, etag: response.etag, lastError: null };
           if (applied.changed)
             await this.notice(`\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433 \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D: \u0432\u0435\u0440\u0441\u0438\u044F ${applied.revision}`, "success");
@@ -2032,8 +2373,10 @@ class CorporateRuntime {
     }
   }
   async invalidate() {
+    this.authGeneration++;
+    clearTimeout(this.tokenTimer);
     this.credential = null;
-    await Promise.all([rm2(join4(this.options.stateDir, "credential.json"), { force: true }), atomicWrite(join4(this.options.stateDir, "access-token"), "")]);
+    await Promise.all([rm2(join5(this.options.stateDir, "credential.json"), { force: true }), atomicWrite(join5(this.options.stateDir, "access-token"), ""), atomicWrite(join5(this.options.stateDir, "access-token-next"), "")]);
     await clearMCP(this.options.stateDir);
     this.mcpConfigs = [];
     await this.reloadMCP();
@@ -2042,8 +2385,25 @@ class CorporateRuntime {
     await this.syncMCP?.(this.mcpConfigs);
     await Promise.all([...this.mcpReloaders].map((reload) => reload()));
   }
+  async mcpConnectionStates(ids) {
+    if (!ids.length || this.options.client !== "opencode" || typeof this.bridge.request !== "function")
+      return null;
+    let states = [];
+    for (let attempt = 0;attempt < 12; attempt++) {
+      const { data } = await this.bridge.request("/api/mcp");
+      states = ids.map((id) => {
+        const state = data.find((entry) => entry.name === `corp_${id}`)?.status;
+        return { id, status: state?.status ?? "pending", rejected: state?.status === "failed" && /HTTP 401\b/.test(state.error ?? "") };
+      });
+      if (states.every((entry) => entry.status === "connected"))
+        break;
+      if (attempt < 11)
+        await sleep(250, this.abort.signal);
+    }
+    return states;
+  }
   async refreshMCPCatalog() {
-    const { data } = await this.api.request("/api/mcps", { token: this.token(), signal: this.abort.signal });
+    const { data } = await this.api.request("/api/mcps", { token: await this.apiToken(), signal: this.abort.signal });
     const catalog = validateMCPCatalog(data, this.options.serverURL);
     const configs = await readMCPState(this.options.stateDir, catalog);
     this.mcpCatalog = catalog;
@@ -2055,23 +2415,23 @@ class CorporateRuntime {
     if (this.polling || !this.credential)
       return;
     this.polling = true;
-    const polledToken = this.credential?.accessToken;
+    const polledGeneration = this.authGeneration;
     let next;
     try {
-      const { data } = await this.api.request("/api/load", { token: this.token(), signal: this.abort.signal });
+      const { data } = await this.api.request("/api/load", { token: await this.apiToken(), signal: this.abort.signal });
       if (!["green", "yellow", "red"].includes(data?.level) || typeof data.message !== "string" || data.message.length > 250 || !Number.isFinite(data.observedAt) || Math.abs(Date.now() - data.observedAt) > 90000)
         throw new Error("\u041D\u0435\u0442 \u0441\u0432\u0435\u0436\u0438\u0445 \u0434\u0430\u043D\u043D\u044B\u0445 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438");
       next = { level: data.level, message: data.message, queue: data.queue, checkedAt: data.observedAt };
     } catch (error) {
       next = { level: "unknown", message: error instanceof Unauthorized ? "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F /login" : "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D", checkedAt: Date.now() };
       if (error instanceof Unauthorized)
-        await this.queue(() => this.credential?.accessToken === polledToken ? this.invalidate() : undefined);
+        await this.queue(() => this.authGeneration === polledGeneration ? this.invalidate() : undefined);
     } finally {
       this.polling = false;
     }
     if (this.abort.signal.aborted)
       return;
-    if (this.credential && this.credential.accessToken !== polledToken)
+    if (this.authGeneration !== polledGeneration)
       return;
     if (!this.credential && next.level !== "unknown")
       return;
@@ -2080,11 +2440,12 @@ class CorporateRuntime {
     if (changed)
       await this.notice(`${lights[next.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441: ${next.message}`, { green: "success", yellow: "warning", red: "error", unknown: "warning" }[next.level]);
   }
-  track(promise, sessionID) {
+  track(promise, sessionID, interactiveError = true) {
     this.jobs.add(promise);
     promise.catch(async (error) => {
       if (!this.abort.signal.aborted) {
-        await this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D", error.message).catch(() => {});
+        if (interactiveError)
+          await this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043F\u043B\u0430\u0433\u0438\u043D", error.message).catch(() => {});
         await this.notice(error.message, "error");
       }
     }).finally(() => this.jobs.delete(promise));
@@ -2126,7 +2487,7 @@ class CorporateRuntime {
     }
     this.loginFlow = flow;
     const clientName = this.options.client === "kilo" ? "Kilo" : "OpenCode";
-    const form = sessionID ? await this.bridge.form(sessionID, `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, [
+    let form = sessionID ? await this.bridge.form(sessionID, `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, [
       { type: "external", key: "login", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0432\u0445\u043E\u0434\u0430", url: flow.url },
       { type: "string", key: "waiting", title: `\u0412\u0445\u043E\u0434 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 ${clientName}`, description: `\u0412 \u043E\u0442\u043A\u0440\u044B\u0432\u0448\u0435\u043C\u0441\u044F \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0442\u0435\u0441\u0442\u043E\u0432\u0443\u044E \u0443\u0447\u0451\u0442\u043D\u0443\u044E \u0437\u0430\u043F\u0438\u0441\u044C. \u041F\u0430\u0440\u043E\u043B\u044C \u043D\u0435 \u043D\u0443\u0436\u0435\u043D. \u0415\u0441\u043B\u0438 \u0431\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u043B\u0441\u044F, \u0441\u043A\u043E\u043F\u0438\u0440\u0443\u0439\u0442\u0435 \u0430\u0434\u0440\u0435\u0441: ${flow.url}`, custom: false, options: [{ value: "waiting", label: "\u041E\u0436\u0438\u0434\u0430\u044E \u0432\u0445\u043E\u0434\u0430 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435" }] }
     ]).catch((error) => {
@@ -2154,25 +2515,29 @@ class CorporateRuntime {
     this.track((async () => {
       try {
         const result = await flow.result;
-        if (!validCredential(result) || result.expiresAt <= Date.now())
+        if (!validCredential(result) || result.refreshExpiresAt <= Date.now())
           throw new Error("\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0435\u0440\u043D\u0443\u043B \u043D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0443\u044E \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u044E");
         validateConfig(result.configuration, this.options.serverURL);
         await this.queue(async () => {
           if (generation !== this.authGeneration || this.abort.signal.aborted)
             throw new Error("\u0412\u0445\u043E\u0434 \u043E\u0442\u043C\u0435\u043D\u0451\u043D");
-          this.credential = { accessToken: result.accessToken, expiresAt: result.expiresAt, user: result.user };
+          this.authGeneration++;
+          this.credential = { accessToken: result.accessToken, expiresAt: result.expiresAt, inferenceToken: result.inferenceToken, inferenceExpiresAt: result.inferenceExpiresAt, refreshToken: result.refreshToken, refreshExpiresAt: result.refreshExpiresAt, user: result.user };
           await clearMCP(this.options.stateDir);
           this.mcpConfigs = [];
           await this.reloadMCP();
-          await atomicWrite(join4(this.options.stateDir, "credential.json"), JSON.stringify(this.credential));
-          await atomicWrite(join4(this.options.stateDir, "access-token"), this.credential.accessToken);
-          this.state = { ...await this.applyConfig({ ...this.options, envelope: result.configuration }), lastError: null };
+          await atomicWrite(join5(this.options.stateDir, "access-token"), this.credential.inferenceToken);
+          await atomicWrite(join5(this.options.stateDir, "access-token-next"), this.credential.inferenceToken);
+          this.scheduleTokenRenewal();
+          this.state = { ...await this.configWrites(() => this.applyConfig({ ...this.options, envelope: result.configuration })), lastError: null };
           await this.persistState();
         });
         await reload();
-        if (form)
-          await this.bridge.message(sessionID, "\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", `${result.user.name}. \u041A\u043E\u043D\u0444\u0438\u0433 \u0432\u0435\u0440\u0441\u0438\u0438 ${this.state.revision} \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B /refresh_config \u0438 /skills_load.`);
-        await this.notice("\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D; \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433 \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D", "success");
+        if (form) {
+          await this.bridge.cancel(sessionID, form.id);
+          form = null;
+        }
+        await this.notice(`\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D: ${result.user.name}. \u041A\u043E\u043D\u0444\u0438\u0433 \u0432\u0435\u0440\u0441\u0438\u0438 ${this.state.revision} \u043F\u0440\u0438\u043C\u0435\u043D\u0451\u043D. \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B /refresh_config \u0438 /skills_load.`, "success");
         await this.pollLoad();
       } finally {
         cancellation.abort();
@@ -2185,20 +2550,28 @@ class CorporateRuntime {
   async skills(sessionID, reload) {
     if (this.forms.has(sessionID))
       throw new Error("\u0424\u043E\u0440\u043C\u0430 \u0432\u044B\u0431\u043E\u0440\u0430 skills \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430");
-    const token = this.token();
-    const { data } = await this.api.request("/api/skills", { token, signal: this.abort.signal });
-    const catalog = validateCatalog(data);
-    if (!catalog.length)
-      return this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", "\u0414\u043B\u044F \u0432\u0430\u0448\u0435\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 skills.");
-    const form = await this.bridge.form(sessionID, "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", [{
+    const accountGeneration = this.authGeneration;
+    const token = this.authenticated() ? await this.apiToken() : null;
+    let catalog = [];
+    if (token) {
+      const { data } = await this.api.request("/api/skills", { token, signal: this.abort.signal });
+      catalog = validateCatalog(data);
+    }
+    const community = communityCatalog(this.options.client);
+    if (!catalog.length && !community.length)
+      return this.bridge.message(sessionID, "Skills", "\u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 skills.");
+    const form = await this.bridge.form(sessionID, "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C skills \u0438 \u043F\u043B\u0430\u0433\u0438\u043D\u044B", [{
       type: "multiselect",
       key: "skills",
-      title: "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043D\u0443\u0436\u043D\u044B\u0435 skills",
-      description: "\u0417\u0430\u0433\u0440\u0443\u0437\u044F\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u0435 skills. \u0423\u0436\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0435 \u043E\u0441\u0442\u0430\u043D\u0443\u0442\u0441\u044F \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.",
+      title: "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043D\u0443\u0436\u043D\u044B\u0435 \u043F\u0430\u043A\u0435\u0442\u044B",
+      description: "Community \u043F\u0430\u043A\u0435\u0442\u044B \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0431\u0435\u0437 /login. \u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills \u0432\u0438\u0434\u043D\u044B \u043F\u043E\u0441\u043B\u0435 \u0432\u0445\u043E\u0434\u0430. \u0423\u0436\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0435 \u043F\u0430\u043A\u0435\u0442\u044B \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F.",
       custom: false,
       minItems: 0,
       default: [],
-      options: catalog.map((skill) => ({ value: skill.id, label: `${skill.name} \xB7 ${skill.version}`, description: skill.description }))
+      options: [
+        ...community.map((item) => ({ value: item.id, label: `${item.name} \xB7 ${item.kind} \xB7 ${item.version}`, description: item.description })),
+        ...catalog.map((skill) => ({ value: skill.id, label: `${skill.name} \xB7 corporate \xB7 ${skill.version}`, description: skill.description }))
+      ]
     }]);
     const controller = new AbortController;
     this.forms.set(sessionID, { form, controller });
@@ -2209,9 +2582,19 @@ class CorporateRuntime {
         if (answer === null)
           return;
         const installed = await this.queue(async () => {
-          if (this.token() !== token)
+          if (token && (this.authGeneration !== accountGeneration || !this.authenticated()))
             throw new Error("\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C; \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 /skills_load \u0441\u043D\u043E\u0432\u0430");
-          return installSkills({ ids: answer.skills ?? [], catalog, api: this.api, token, skillsDir: this.options.skillsDir, signal });
+          const chosen = answer.skills ?? [];
+          if (!Array.isArray(chosen) || new Set(chosen).size !== chosen.length)
+            throw new Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0432\u044B\u0431\u043E\u0440 skills");
+          const known = new Set([...community.map((item) => item.id), ...catalog.map((item) => item.id)]);
+          if (chosen.some((id) => !known.has(id)))
+            throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D skill \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
+          const communityIDs = chosen.filter((id) => id.startsWith("community-"));
+          const corporateIDs = chosen.filter((id) => id.startsWith("corp-"));
+          const added = await installCommunity({ ids: communityIDs, client: this.options.client, skillsDir: this.options.skillsDir, configPath: this.options.configPath });
+          const corporate = corporateIDs.length ? await installSkills({ ids: corporateIDs, catalog, api: this.api, token: await this.apiToken(), skillsDir: this.options.skillsDir, signal }) : [];
+          return [...added, ...corporate];
         });
         await reload();
         await this.bridge.message(sessionID, "Skills \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D\u044B", installed.length ? installed.join(`
@@ -2225,16 +2608,17 @@ class CorporateRuntime {
   async mcps(sessionID, reload = async () => {}) {
     if (this.forms.has(sessionID))
       throw new Error("\u0424\u043E\u0440\u043C\u0430 \u0432\u044B\u0431\u043E\u0440\u0430 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430");
-    const token = this.token();
+    await this.apiToken();
+    const accountGeneration = this.authGeneration;
     const catalog = await this.refreshMCPCatalog();
     if (!catalog.length)
-      return this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", "\u0414\u043B\u044F \u0432\u0430\u0448\u0435\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 MCP.");
+      return this.options.client === "kilo" ? this.bridge.message(sessionID, "\u041A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", "\u0414\u043B\u044F \u0432\u0430\u0448\u0435\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 MCP.") : this.notice("\u0414\u043B\u044F \u0432\u0430\u0448\u0435\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 MCP.", "info");
     const selected = this.mcpConfigs.map(({ name }) => name.slice(5));
     const form = await this.bridge.form(sessionID, "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", [{
       type: "multiselect",
       key: "mcps",
       title: "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 MCP",
-      description: `\u041B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B \u0432\u0432\u043E\u0434\u044F\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u0432 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
+      description: `\u0414\u043B\u044F \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u0445 MCP \u043E\u0442\u043A\u0440\u043E\u0435\u0442\u0441\u044F \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0430\u044F \u0444\u043E\u0440\u043C\u0430 \u0432\u0432\u043E\u0434\u0430 \u0438\u043B\u0438 \u0437\u0430\u043C\u0435\u043D\u044B \u0442\u043E\u043A\u0435\u043D\u043E\u0432, \u043D\u0435 \u0432 \u0447\u0430\u0442\u0435 ${this.options.client === "kilo" ? "Kilo" : "OpenCode"}.`,
       custom: false,
       minItems: 0,
       default: selected,
@@ -2254,39 +2638,72 @@ class CorporateRuntime {
           if (!item)
             throw new Error("\u0412\u044B\u0431\u0440\u0430\u043D MCP \u0432\u043D\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0433\u043E \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430");
           return item;
-        }).filter((item) => !selected.includes(item.id));
-        let tokens = new Map;
+        });
+        const apply = async (tokens) => {
+          await this.queue(async () => {
+            if (signal.aborted || this.authGeneration !== accountGeneration || !this.authenticated())
+              throw new Error("\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C; \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 /mcps_load \u0441\u043D\u043E\u0432\u0430");
+            this.mcpConfigs = await saveMCPSelection(this.options.stateDir, ids, catalog, tokens);
+            await this.reloadMCP();
+          });
+          await reload();
+          if (!ids.length) {
+            if (this.options.client === "kilo")
+              await this.bridge.message(sessionID, "MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B", "\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B.");
+            else
+              await this.notice("\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B.", "info");
+            return { kind: "success", title: "MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B", message: "\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B." };
+          }
+          let states = null;
+          try {
+            states = await this.mcpConnectionStates(ids);
+          } catch {}
+          const items = requested.map((item) => {
+            const state = states?.find((entry) => entry.id === item.id);
+            return { name: item.name, status: state?.status ?? "pending", detail: state?.status === "connected" ? "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D" : state?.rejected ? "\u0422\u043E\u043A\u0435\u043D \u043E\u0442\u043A\u043B\u043E\u043D\u0451\u043D (HTTP 401)" : state?.status === "failed" ? "\u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E" : "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0438" };
+          });
+          const failed = items.filter((item) => item.status !== "connected");
+          if (states && failed.length) {
+            const summary = failed.map((item) => `${item.name}: ${item.detail}`).join("; ");
+            if (this.options.client === "kilo")
+              await this.bridge.message(sessionID, "MCP \u043D\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B", summary);
+            else
+              await this.notice(`MCP \u043D\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B. ${summary}`, "warning");
+            return { kind: "error", title: "\u041D\u0435 \u0432\u0441\u0435 MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u043B\u0438\u0441\u044C", message: "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 /mcps_load, \u0447\u0442\u043E\u0431\u044B \u0437\u0430\u043C\u0435\u043D\u0438\u0442\u044C \u0442\u043E\u043A\u0435\u043D\u044B.", items };
+          }
+          const names = requested.map((item) => item.name).join(", ");
+          if (this.options.client === "kilo")
+            await this.bridge.message(sessionID, "MCP \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B", names);
+          else
+            await this.notice(`${states ? "MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B" : "MCP \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B \u0432 \u043A\u043E\u043D\u0444\u0438\u0433"}: ${names}`, "success");
+          return { kind: states ? "success" : "warning", title: states ? "MCP \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u044B" : "MCP \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B \u0432 \u043A\u043E\u043D\u0444\u0438\u0433", message: states ? "\u0421\u0438\u0441\u0442\u0435\u043C\u044B \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0432 OpenCode." : "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0432 Kilo.", items };
+        };
         if (requested.length) {
-          const page2 = await captureSecrets(requested);
+          const page2 = await captureSecrets(requested, { onSubmit: apply });
           const cancel = () => page2.cancel();
           signal.addEventListener("abort", cancel, { once: true });
           let notice;
           try {
-            notice = await this.bridge.form(sessionID, "\u0422\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 MCP", [{ type: "external", key: "tokens", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443 \u0434\u043B\u044F \u0442\u043E\u043A\u0435\u043D\u043E\u0432", url: page2.url }]);
-            await this.open(page2.url).catch(() => {});
-            tokens = await page2.result;
+            if (process.env.CORP_NO_BROWSER === "1")
+              notice = await this.bridge.form(sessionID, "\u0422\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 MCP", [{ type: "external", key: "tokens", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443 \u0434\u043B\u044F \u0442\u043E\u043A\u0435\u043D\u043E\u0432", url: page2.url }]);
+            else
+              await this.open(page2.url).catch(async () => {
+                notice = await this.bridge.form(sessionID, "\u0422\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 MCP", [{ type: "external", key: "tokens", title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0444\u043E\u0440\u043C\u0443 \u0434\u043B\u044F \u0442\u043E\u043A\u0435\u043D\u043E\u0432", url: page2.url }]);
+              });
+            await page2.result;
           } finally {
             signal.removeEventListener("abort", cancel);
             page2.cancel();
             if (notice)
               await this.bridge.cancel(sessionID, notice.id);
           }
-        }
-        await this.queue(async () => {
-          if (this.token() !== token)
-            throw new Error("\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C; \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 /mcps_load \u0441\u043D\u043E\u0432\u0430");
-          this.mcpConfigs = await saveMCPSelection(this.options.stateDir, ids, catalog, tokens);
-          await this.reloadMCP();
-        });
-        await reload();
-        await this.bridge.message(sessionID, "MCP \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u044B", ids.length ? `${ids.map((id) => catalog.find((item) => item.id === id).name).join(`
-`)}
-\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 /mcps.` : "\u0412\u0441\u0435 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u044B.");
+        } else
+          await apply(new Map);
       } finally {
         this.forms.delete(sessionID);
         await this.bridge.cancel(sessionID, form.id);
       }
-    })(), sessionID);
+    })(), sessionID, false);
   }
   async logout() {
     this.authGeneration++;
@@ -2294,22 +2711,31 @@ class CorporateRuntime {
     for (const { controller } of this.forms.values())
       controller.abort();
     await this.queue(async () => {
-      const token = this.credential?.accessToken;
+      const refreshToken = this.credential?.refreshToken;
+      const accessToken = this.credential?.accessToken;
       await this.invalidate();
       this.state = {};
       await this.persistState();
       this.load = { level: "unknown", message: "\u0412\u0445\u043E\u0434 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D", checkedAt: null };
       try {
-        await this.removeProvider(this.options.configPath, this.options.client);
+        await this.configWrites(() => this.removeProvider(this.options.configPath, this.options.client));
       } finally {
-        if (token)
-          await this.api.request("/oauth/revoke", { token, method: "POST", body: {} }).catch(() => {});
+        if (refreshToken) {
+          try {
+            await this.api.request("/oauth/revoke", { method: "POST", body: { refreshToken } });
+          } catch {
+            if (accessToken)
+              await this.api.request("/oauth/revoke", { method: "POST", token: accessToken, body: {} }).catch(() => {});
+          }
+        } else if (accessToken)
+          await this.api.request("/oauth/revoke", { method: "POST", token: accessToken, body: {} }).catch(() => {});
       }
     });
   }
   dispose() {
     clearInterval(this.configTimer);
     clearInterval(this.loadTimer);
+    clearTimeout(this.tokenTimer);
     this.abort.abort();
     this.loginFlow?.cancel();
     clearMCPEnv(this.options.stateDir);
@@ -2317,8 +2743,8 @@ class CorporateRuntime {
 }
 function optionsFromEnv(env = process.env, settings = {}) {
   const client = settings.client === "kilo" ? "kilo" : "opencode";
-  const profile = resolve((client === "kilo" ? env.CORP_KILO_PROFILE_DIR : undefined) ?? env.CORP_PROFILE_DIR ?? settings.profileDir ?? (client === "kilo" ? env.KILO_CONFIG_DIR : env.OPENCODE_CONFIG_DIR) ?? join4(env.XDG_CONFIG_HOME ?? join4(homedir(), ".config"), client));
-  const serviceFile = join4(env.XDG_STATE_HOME ?? join4(homedir(), ".local", "state"), "opencode", "service.json");
+  const profile = resolve((client === "kilo" ? env.CORP_KILO_PROFILE_DIR : undefined) ?? env.CORP_PROFILE_DIR ?? settings.profileDir ?? (client === "kilo" ? env.KILO_CONFIG_DIR : env.OPENCODE_CONFIG_DIR) ?? join5(env.XDG_CONFIG_HOME ?? join5(homedir(), ".config"), client));
+  const serviceFile = join5(env.XDG_STATE_HOME ?? join5(homedir(), ".local", "state"), "opencode", "service.json");
   const interval = (value, fallback) => {
     const n = Number(value ?? fallback);
     if (!Number.isFinite(n) || n < 50)
@@ -2328,9 +2754,9 @@ function optionsFromEnv(env = process.env, settings = {}) {
   return {
     client,
     serverURL: trustedURL(env.CORP_SERVER_URL ?? settings.serverURL ?? "http://127.0.0.1:4310"),
-    configPath: join4(profile, client === "kilo" ? "kilo.jsonc" : "opencode.jsonc"),
-    stateDir: join4(profile, "corporate-state"),
-    skillsDir: join4(profile, "skills"),
+    configPath: join5(profile, client === "kilo" ? "kilo.jsonc" : "opencode.jsonc"),
+    stateDir: join5(profile, "corporate-state"),
+    skillsDir: join5(profile, "skills"),
     connectionFile: env.CORP_OPENCODE_CONNECTION_FILE ?? settings.connectionFile ?? serviceFile,
     refreshMs: interval(env.CORP_REFRESH_INTERVAL_MS ?? settings.refreshMs, 3600000),
     loadPollMs: interval(env.CORP_LOAD_INTERVAL_MS ?? settings.loadPollMs, 30000)
@@ -2341,7 +2767,7 @@ function optionsFromEnv(env = process.env, settings = {}) {
 import { createServer as createServer3 } from "http";
 import { timingSafeEqual as timingSafeEqual2 } from "crypto";
 import { rmSync } from "fs";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // src/kilo-bridge.js
 import { createServer as createServer2 } from "http";
@@ -2435,7 +2861,7 @@ class KiloBridge {
 var commands = Object.freeze([
   { name: "login", description: "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode \u0447\u0435\u0440\u0435\u0437 \u0431\u0440\u0430\u0443\u0437\u0435\u0440", kiloDescription: "\u0412\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0438\u0441", reload: true },
   { name: "refresh_config", description: "\u041F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0438 \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433", kiloDescription: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043E\u043D\u0444\u0438\u0433", reload: true },
-  { name: "skills_load", description: "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", kiloDescription: "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", reload: true },
+  { name: "skills_load", description: "\u0412\u044B\u0431\u0440\u0430\u0442\u044C community skills, \u043F\u043B\u0430\u0433\u0438\u043D\u044B \u0438 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 skills", kiloDescription: "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C skills \u0438\u0437 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430", reload: true },
   { name: "mcps_load", description: "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP \u0438 \u0432\u0432\u0435\u0441\u0442\u0438 \u043B\u0438\u0447\u043D\u044B\u0435 \u0442\u043E\u043A\u0435\u043D\u044B", kiloDescription: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0435 MCP", reload: true },
   { name: "logout", description: "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0439 \u0443\u0447\u0451\u0442\u043D\u043E\u0439 \u0437\u0430\u043F\u0438\u0441\u0438", kiloDescription: "\u0412\u044B\u0439\u0442\u0438 \u0438\u0437 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0441\u0435\u0440\u0432\u0438\u0441\u0430", reload: true },
   { name: "corp_status", description: "\u0423\u0447\u0451\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C, \u0432\u0435\u0440\u0441\u0438\u044F \u043A\u043E\u043D\u0444\u0438\u0433\u0430 \u0438 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0438\u043D\u0444\u0435\u0440\u0435\u043D\u0441\u0430", kiloDescription: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441", reload: false },
@@ -2468,7 +2894,7 @@ ${lights[status.load.level]} ${status.load.message}
 ${status.config.lastError}` : ""}`);
     }
     case "inference_status": {
-      runtime.token();
+      await runtime.apiToken();
       await runtime.pollLoad();
       return runtime.bridge.message(sessionID, `${lights[runtime.load.level]} \u0418\u043D\u0444\u0435\u0440\u0435\u043D\u0441`, runtime.load.message);
     }
@@ -2481,7 +2907,7 @@ function registerOpenCodeCommands(context, runtime) {
     for (const { name, description } of commands)
       registry.add({ name, description, async execute({ sessionID }) {
         try {
-          if (name !== "login" && !runtime.authenticated()) {
+          if (name !== "login" && name !== "skills_load" && !runtime.authenticated()) {
             await runtime.bridge.message(sessionID, `/${name}`, "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login, \u0447\u0442\u043E\u0431\u044B \u0432\u043E\u0439\u0442\u0438 \u0432 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 OpenCode.");
             return;
           }
@@ -2494,8 +2920,8 @@ function registerOpenCodeCommands(context, runtime) {
 }
 
 // src/kilo-control.js
-var key = Symbol.for("company.kilo.corporate.control.v3");
-var legacyKeys = [Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
+var key = Symbol.for("company.kilo.corporate.control.v6");
+var legacyKeys = [Symbol.for("company.kilo.corporate.control.v5"), Symbol.for("company.kilo.corporate.control.v4"), Symbol.for("company.kilo.corporate.control.v3"), Symbol.for("company.kilo.corporate.control.v2"), Symbol.for("company.kilo.corporate.control.v1")];
 async function startKiloControl(settings = {}, adapters = {}) {
   const options = optionsFromEnv(process.env, { ...settings, client: "kilo" });
   const name = `${options.configPath}|${options.serverURL}`;
@@ -2527,6 +2953,7 @@ async function boot(options, adapters) {
     bridge,
     open: adapters.open,
     notify: adapters.notify,
+    reloadProvider: adapters.reloadProvider,
     syncMCP: (configs) => syncKiloMCP(options.configPath, options.stateDir, configs)
   });
   await runtime.start();
@@ -2534,7 +2961,7 @@ async function boot(options, adapters) {
   const queue = serial();
   const execute = (command) => queue(async () => {
     messages = [];
-    if (command !== "login" && !runtime.authenticated())
+    if (command !== "login" && command !== "skills_load" && !runtime.authenticated())
       return { message: "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 /login.", reload: false };
     if (command === "login")
       await runtime.login("kilo-vscode");
@@ -2598,7 +3025,7 @@ ${lights[status.load.level]} ${status.load.message}`);
     });
     server.unref();
     const state = JSON.stringify({ port: server.address().port, secret });
-    const ownFile = join5(options.stateDir, `control-${process.pid}.json`);
+    const ownFile = join6(options.stateDir, `control-${process.pid}.json`);
     server.on("close", () => {
       try {
         rmSync(ownFile, { force: true });
@@ -2610,7 +3037,7 @@ ${lights[status.load.level]} ${status.load.message}`);
       } catch {}
     });
     await atomicWrite(ownFile, state);
-    await atomicWrite(join5(options.stateDir, "control.json"), state);
+    await atomicWrite(join6(options.stateDir, "control.json"), state);
     runtime.autoLogin();
     return { runtime, server, bridge };
   } catch (error) {
@@ -2622,8 +3049,8 @@ ${lights[status.load.level]} ${status.load.message}`);
 }
 
 // src/kilo-workflows.js
-import { readFile as readFile4 } from "fs/promises";
-import { dirname as dirname2, join as join6 } from "path";
+import { readFile as readFile5 } from "fs/promises";
+import { dirname as dirname3, join as join7 } from "path";
 var marker = "# opencode_corp managed Kilo workflow";
 var legacyMarker = "<!-- opencode_corp managed Kilo workflow -->";
 var helper = String.raw`import { readFile, readdir, stat } from "node:fs/promises";
@@ -2673,18 +3100,18 @@ function quote(path) {
   return `'${path.replaceAll("'", `'"'"'`)}'`;
 }
 async function installKiloWorkflows(options) {
-  const script = join6(options.stateDir, "workflow-command.mjs");
+  const script = join7(options.stateDir, "workflow-command.mjs");
   await atomicWrite(script, helper);
   const conflicts = [];
   for (const { name, kiloDescription: description } of commands) {
-    const file = join6(dirname2(options.configPath), "commands", `${name}.md`);
+    const file = join7(dirname3(options.configPath), "commands", `${name}.md`);
     const current = await exists(file);
     if (current) {
       if (current.isSymbolicLink()) {
         conflicts.push(name);
         continue;
       }
-      const content2 = await readFile4(file, "utf8");
+      const content2 = await readFile5(file, "utf8");
       if (!content2.includes(marker) && !content2.includes(legacyMarker)) {
         conflicts.push(name);
         continue;
@@ -2712,7 +3139,7 @@ var rpc = {
   methods: { status: { input: { type: "object", properties: {}, additionalProperties: false }, output: { type: "object" } } },
   events: { notice: { schema: { type: "object", properties: { message: { type: "string" }, level: { type: "string" }, at: { type: "number" } }, required: ["message", "level", "at"] } } }
 };
-var registryKey = Symbol.for("company.opencode.corporate.runtime.v6");
+var registryKey = Symbol.for("company.opencode.corporate.runtime.v9");
 function release(registry, key2, entry) {
   if (--entry.refs !== 0)
     return;

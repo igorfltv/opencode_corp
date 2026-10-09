@@ -6,7 +6,7 @@ import plugin from "../src/plugin.js";
 import { commands } from "../src/commands.js";
 import { atomicWrite } from "../src/io.js";
 
-const registry = () => globalThis[Symbol.for("company.opencode.corporate.runtime.v6")];
+const registry = () => globalThis[Symbol.for("company.opencode.corporate.runtime.v9")];
 
 function context(root, calls, failRPC = false) {
   return {

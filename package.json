@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "files": ["server.js", "tui.js", "README.md", "ROADMAP.md"],
+  "files": ["server.js", "tui.js", "community", "README.md", "ROADMAP.md"],
   "exports": { ".": "./server.js", "./server": "./server.js", "./tui": "./tui.js" },
   "scripts": {
     "bundle": "bun build src/plugin.js --target=bun --outfile server.js && bun build src/tui.js --target=bun --outfile tui.js",

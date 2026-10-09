@@ -10,11 +10,26 @@ function page(items, action, csrf) {
   </style></head><body><main><div class="brand"><span class="mark">↗</span> Корпоративные инструменты</div><div class="panel"><h1>Подключите выбранные системы</h1><p class="lead">Введите личные токены для ${items.length} ${items.length % 10 === 1 && items.length % 100 !== 11 ? "системы" : "систем"}. Отправка подключит MCP в текущем запуске OpenCode или Kilo.</p><div class="notice"><b>◈</b><span>Токены передаются только локальному плагину. Они не появятся в чате и не будут записаны в файл конфигурации.</span></div><form method="post" action="${action}" autocomplete="off"><input type="hidden" name="csrf" value="${csrf}">${fields}<div class="footer"><span class="footnote">После перезапуска приложения потребуется ввести токены снова.</span><button type="submit">Подключить ${items.length} MCP</button></div></form></div></main></body></html>`;
 }
 
-export async function captureSecrets(items, { timeoutMs = 300000 } = {}) {
+function resultPage(outcome = {}) {
+  const kind = ["success", "warning", "error"].includes(outcome.kind) ? outcome.kind : "warning";
+  const title = escapeHTML(outcome.title ?? "Токены переданы");
+  const message = escapeHTML(outcome.message ?? "Плагин обрабатывает подключение.");
+  const icon = { success: "✓", warning: "·", error: "!" }[kind];
+  const items = Array.isArray(outcome.items) ? outcome.items.map((item) => {
+    const state = item.status === "connected" ? "ok" : item.status === "failed" ? "bad" : "wait";
+    return `<li><span class="dot ${state}">${{ ok: "✓", bad: "!", wait: "·" }[state]}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.detail ?? "")}</small></span></li>`;
+  }).join("") : "";
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${title}</title><style>
+  :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f6f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% 0%,#d7ebe8 0,transparent 40%),#f3f6f7}main{width:min(620px,calc(100% - 32px));margin:9vh auto 48px}.brand{color:#37666a;font-size:12px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}.card{margin-top:20px;padding:clamp(26px,5vw,42px);border:1px solid #e0e8e9;border-radius:24px;background:#fff;box-shadow:0 20px 60px #1c434b12}.icon{display:grid;place-items:center;width:54px;height:54px;border-radius:17px;font-size:29px;font-weight:700;background:#e7f5ef;color:#16805c}.warning .icon{background:#fff4da;color:#a56b14}.error .icon{background:#fcebea;color:#bd5149}h1{margin:24px 0 0;font-size:clamp(28px,4vw,36px);line-height:1.15;letter-spacing:-.035em}p{margin:13px 0 0;color:#5a6b75;font-size:16px;line-height:1.55}ul{list-style:none;margin:27px 0 0;padding:0;border-top:1px solid #edf0f1}li{display:flex;gap:13px;align-items:flex-start;padding:16px 0;border-bottom:1px solid #edf0f1}.dot{display:grid;place-items:center;flex:none;width:27px;height:27px;border-radius:9px;font-size:15px;font-weight:750}.dot.ok{background:#e7f5ef;color:#16805c}.dot.bad{background:#fcebea;color:#bd5149}.dot.wait{background:#edf1f3;color:#667780}strong{display:block;font-size:15px}small{display:block;margin-top:4px;color:#6a7981;font-size:13px;line-height:1.4}.footer{margin-top:25px;color:#7c8b92;font-size:13px}@media(max-width:600px){main{margin:24px auto}.card{border-radius:18px}}
+  </style></head><body><main class="${kind}"><div class="brand">↗ Корпоративные инструменты</div><div class="card"><div class="icon">${icon}</div><h1>${title}</h1><p>${message}</p>${items ? `<ul>${items}</ul>` : ""}<div class="footer">Эту вкладку можно закрыть.</div></div></main></body></html>`;
+}
+
+export async function captureSecrets(items, { timeoutMs = 300000, onSubmit } = {}) {
   if (!Array.isArray(items) || !items.length || items.length > 30 || new Set(items.map((item) => item.id)).size !== items.length || items.some((item) => !/^[a-z][a-z0-9_-]{0,39}$/.test(item.id))) throw new Error("Некорректный список MCP для ввода токенов");
   const nonce = random();
   const csrf = random();
   let settled = false;
+  let processing = false;
   let accept, reject;
   const result = new Promise((yes, no) => { accept = yes; reject = no; });
   const server = createServer(async (request, response) => {
@@ -43,9 +58,23 @@ export async function captureSecrets(items, { timeoutMs = 300000 } = {}) {
       response.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }).end("Проверьте токены и повторите отправку.");
       return;
     }
+    if (settled || processing) { response.writeHead(409, headers).end(); return; }
+    processing = true;
     const tokens = new Map(items.map((item) => [item.id, form.get(`token:${item.id}`)]));
-    response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><html lang=ru><meta charset=utf-8><title>MCP подключаются</title><style>body{font:16px system-ui;max-width:32rem;margin:12vh auto;padding:2rem;background:#f3f6f7;color:#17212b}main{padding:2rem;background:white;border-radius:18px}h1{font-size:25px}</style><main><h1>Токены переданы</h1><p>Плагин подключает выбранные MCP. Эту вкладку можно закрыть.</p></main></html>");
-    if (!settled) { settled = true; accept(tokens); server.close(); }
+    try {
+      const outcome = await onSubmit?.(tokens);
+      if (!settled) {
+        response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(resultPage(outcome));
+        settled = true;
+        accept(tokens);
+      }
+    } catch (error) {
+      if (!settled) {
+        response.writeHead(500, { ...headers, "Content-Type": "text/html; charset=utf-8" }).end(resultPage({ kind: "error", title: "Не удалось завершить подключение", message: "Проверьте OpenCode или Kilo и повторите /mcps_load." }));
+        settled = true;
+        reject(error);
+      }
+    } finally { server.close(); }
   });
   await new Promise((resolve, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", resolve); });
   const timer = setTimeout(() => { if (!settled) { settled = true; reject(new Error("Время ввода токенов истекло")); server.close(); } }, timeoutMs);
